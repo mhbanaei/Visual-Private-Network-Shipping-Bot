@@ -1,3 +1,8 @@
+# Full corrected bot file.
+# Fix applied: removed SERVICE_DETAILS_PLAN_ from config_name_conv_handler entry points so
+# selecting a plan shows its details first; only CONFIRM_* callbacks start the purchase conversation.
+# Other fixes from previous iterations (avoid ReplyKeyboardMarkup in edit_message_text, avoid Markdown parse issues) preserved.
+
 import logging
 import requests
 import json
@@ -20,58 +25,65 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==========================================================
-# --- متغیرهای کلیدی (حتماً جایگزین کنید!) 🔑 ---
+# --- متغیرهای کلیدی: تنظیمات سرورها ---
 # ==========================================================
-BOT_TOKEN = "BOT_TOKEN" 
+
+# 🌟 تنظیمات چند سرور (دست نخورده)
+SERVERS_CONFIG = {
+    "Server_1": {
+        "display_name": "Server 🟣",
+        "xui_panel_url": "xui_panel_url",
+        "xui_username": "xui_panel_url",
+        "xui_password": "xui_password",
+        "login_path": "/login_path/login",
+        "inbound_id": 1,
+        "server_address": "server_address",
+        "server_port_subscription": 2096,
+        "server_port_client": 8080,
+        "base_path": "/base_path",
+        "subscribe_path": "/subscribe/",
+        "active": 1,   # 🌟 1 = قابل خرید | 0 = ظرفیت پر
+        "tamdid": 1    # 🌟 1 = قابل تمدید | 0 = تمدید غیرفعال
+    }
+}
+
+# تنظیمات اولیه 
+BOT_TOKEN = "BOT_TOKEN"
 ADMIN_CHAT_IDS = [6659266132, 8287371040]
-ZARINPAL_MERCHANT_ID = "ZARINPAL_MERCHANT_ID" 
+ZARINPAL_MERCHANT_ID = "ZARINPAL_MERCHANT_ID"
 
-# --- اطلاعات اتصال به پنل x-ui (حتماً با دقت جایگزین شود!) ---
-XUI_PANEL_URL = "XUI_PANEL_URL"  
-XUI_USERNAME = "XUI_USERNAME"
-XUI_PASSWORD = "XUI_PASSWORD"
-LOGIN_PATH = "LOGIN_PATH" 
+# ⚠️ تنظیمات پروتکل VMESS
+def get_protocol_settings(server_key):
+    """بازگشت تنظیمات پروتکل برای سرور مشخص"""
+    server_config = SERVERS_CONFIG[server_key]
+    return {
+        "add": server_config["server_address"],
+        "port": server_config["server_port_client"],
+        "id": "",
+        "aid": 0,
+        "net": "ws",
+        "type": "none",
+        "host": server_config["server_address"],
+        "path": "/ws",
+        "tls": "tls",
+        "sni": server_config["server_address"],
+        "scy": "auto",
+        "v": "2"
+    }
 
-# --- تنظیمات اینباند X-UI ---
-INBOUND_ID = 1 
-SERVER_ADDRESS = XUI_PANEL_URL.split("//")[1].split(":")[0] 
-SERVER_PORT_SUBSCRIPTION = 2096 
-SERVER_PORT_CLIENT = 8080       
-
-# ⚠️ تنظیمات پروتکل VMESS (بر اساس Base64 شما تنظیم شده است)
-PROTOCOL_SETTINGS = {
-    "add": SERVER_ADDRESS,
-    "port": SERVER_PORT_CLIENT,
-    "id": "", 
-    "aid": 0, 
-    "net": "ws",
-    "type": "none",
-    "host": SERVER_ADDRESS,
-    "path": "/ws",
-    "tls": "tls",
-    "sni": SERVER_ADDRESS,
-    "scy": "auto",
-    "v": "2"
-} 
-
-# --- تنظیمات آدرس‌دهی پنل ---
-# ⚠️ این مسیر سفارشی شماست و باید برای همه API ها استفاده شود.
-BASE_PATH = "/fRCZlF8gq0"  
-SUBSCRIBE_PATH = "/subscribe/" 
-# ==========================================================
-
-# 🌟 اصلاح شد: تعریف ثابت‌های وضعیت برای رفع خطای NameError
-# وضعیت‌های Conversation (به‌روز شده)
+# --- وضعیت‌های Conversation ---
 STATE_GET_AMOUNT = 1
 STATE_GET_TICKET = 2
 STATE_WAITING_FOR_CONFIG_NAME = 3
-STATE_WAITING_FOR_CONFIG_NAME_CONFIRM = 4 
-STATE_WAITING_FOR_RENEWAL_NAME = 5 
-STATE_WAITING_FOR_RENEWAL_CONFIRM = 6 
+STATE_WAITING_FOR_CONFIG_NAME_CONFIRM = 4
+STATE_WAITING_FOR_RENEWAL_NAME = 5
+STATE_WAITING_FOR_RENEWAL_CONFIRM = 6
+STATE_SELECT_SERVER = 7  
+STATE_SELECT_SERVER_FOR_RENEWAL = 8 
 
 # --- فایل‌های ذخیره‌سازی دائمی ---
-PENDING_PAYMENTS_FILE = 'pending_payments.json' 
-USERS_FILE = 'users.json' 
+PENDING_PAYMENTS_FILE = 'pending_payments.json'
+USERS_FILE = 'users.json'
 
 # --- تنظیمات زرین‌پال ---
 ZARINPAL_WEBSERVICE = 'https://api.zarinpal.com/pg/v4/payment/request.json'
@@ -80,33 +92,46 @@ ZARINPAL_STARTPAY = 'https://www.zarinpal.com/pg/StartPay/'
 
 # --- لیست قیمت نهایی (واحد: تومان) ---
 SERVICES = {
-    "Nano_Lite":      {"label": "نانو لایت", "users": 1, "volume": "10 گیگ",  "days": 30, "price_toman": 35000, "description": "برای استفاده سبک مثل پیام‌رسان و مرور روزانه."},
-    "Pint_Lite":      {"label": "پینت لایت", "users": 1, "volume": "30 گیگ",  "days": 30, "price_toman": 69000, "description": "مناسب کاربران نیمه‌فعال و شبکه‌های اجتماعی."},
-    "Standard":       {"label": "استاندارد", "users": 1, "volume": "50 گیگ",  "days": 30, "price_toman": 89000, "description": "تعادل عالی بین سرعت."},
-    "Smart_Online":   {"label": "اسمارت آنلاین", "users": 1, "volume": "100 گیگ", "days": 30, "price_toman": 129000, "description": "محبوب میان کاربران حرفه‌ای ایرانی."},
-    "Pro_Plus":       {"label": "پرو پلاس +", "users": 1, "volume": "200 گیگ", "days": 30, "price_toman": 179000, "description": "انتخاب همیشگی برای فریلنسرها و گیمرها."},
-    "Family":         {"label": "خانواده", "users": 2, "volume": "500 گیگ", "days": 30, "price_toman": 379000, "description": "طراحی شده برای خانواده یا گروه کاری کوچک."},
-    "Titanium":       {"label": "تیتانیوم", "users": 1, "volume": "700 گیگ", "days": 30, "price_toman": 419000, "description": "تعادل هوشمند بین ترافیک زیاد و کنترل کیفیت."},
-    "VIP":            {"label": "VIP", "users": 1, "volume": "900 گیگ", "days": 30, "price_toman": 459000, "description": "مخصوص یوزرهای دائم آنلاین و پرمصرف."},
-    "VIP_Plus":       {"label": "VIP_Plus", "users": 2, "volume": "1000 گیگ", "days": 30, "price_toman": 599000, "description": "سطح بالای امنیت، اختصاصی مدیران و حرفه‌ای‌ها."},
+    "Nano_Lite": {"label": "نانو لایت", "users": 2, "volume": "10 گیگ", "days": 10, "price_toman": 35000, "description": "برای استفاده سبک مثل پیام‌رسان و مرور روزانه."},
+    "Pint_Lite": {"label": "پینت لایت", "users": 2, "volume": "30 گیگ", "days": 20, "price_toman": 69000, "description": "مناسب کاربران نیمه‌فعال و شبکه‌های اجتماعی."},
+    "Standard": {"label": "استاندارد", "users": 2, "volume": "50 گیگ", "days": 30, "price_toman": 89000, "description": "تعادل عالی بین سرعت."},
+    "Smart_Online": {"label": "اسمارت آنلاین", "users": 2, "volume": "100 گیگ", "days": 30, "price_toman": 129000, "description": "محبوب میان کاربران حرفه‌ای ایرانی."},
+    "Pro_Plus": {"label": "پرو پلاس +", "users": 3, "volume": "200 گیگ", "days": 30, "price_toman": 179000, "description": "انتخاب همیشگی برای فریلنسرها و گیمرها."},
+    "Family": {"label": "خانواده", "users": 3, "volume": "500 گیگ", "days": 30, "price_toman": 379000, "description": "طراحی شده برای خانواده یا گروه کاری کوچک."},
+    "Titanium": {"label": "تیتانیوم", "users": 4, "volume": "700 گیگ", "days": 30, "price_toman": 419000, "description": "تعادل هوشمند بین ترافیک زیاد و کنترل کیفیت."},
+    "VIP": {"label": "VIP", "users": 5, "volume": "900 گیگ", "days": 30, "price_toman": 459000, "description": "مخصوص یوزرهای دائم آنلاین و پرمصرف."},
+    "VIP_Plus": {"label": "VIP_Plus", "users": 5, "volume": "1000 گیگ", "days": 30, "price_toman": 599000, "description": "سطح بالای امنیت، اختصاصی مدیران و حرفه‌ای‌ها."},
     "Organizational": {"label": "سازمانی", "users": 5, "volume": "2500 گیگ", "days": 30, "price_toman": 749000, "description": "انتخاب اقتصادی برای تیم‌ها و سازمان‌ها."},
-    "Unlimited":      {"label": "نامحدود + هدیه", "users": 1, "volume": "9999 گیگ", "days": 30, "price_toman": 899000, "description": "IP ثابت آلمان، سرعت اختصاصی."},
+    "Unlimited": {"label": "نامحدود + هدیه", "users": 2, "volume": "9999 گیگ", "days": 30, "price_toman": 899000, "description": "IP ثابت آلمان، سرعت اختصاصی."},
 }
 
-
-# --- دکمه‌های منوی اصلی و وضعیت‌ها ---
+# --- دکمه‌های منوی اصلی ---
 MAIN_MENU_KEYBOARD = [
     ["🛍️ خرید سرویس (انتخاب پلن)"],
-    ["📂 سرویس‌های من", "👤 حساب من"], 
+    ["📂 سرویس‌های من", "👤 حساب من"],
     ["💰 شارژ کیف پول", "📞 پشتیبانی"],
 ]
 MAIN_MENU_REPLY_MARKUP = ReplyKeyboardMarkup(MAIN_MENU_KEYBOARD, resize_keyboard=True)
 
-## 🗄️ توابع مدیریت دیتابیس کاربران (JSON)
+# دیکشنری برای نگهداری Cookie هر سرور
+XUI_AUTH_COOKIES = {}
+
+# -------------------------
+# Helper to send main menu
+# -------------------------
+async def send_main_menu(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await context.bot.send_message(chat_id=chat_id, text="یک گزینه را انتخاب کنید:", reply_markup=MAIN_MENU_REPLY_MARKUP)
+    except Exception as e:
+        logger.error(f"Failed to send main menu to {chat_id}: {e}")
+
+# ============================================================
+# --- توابع مدیریت دیتابیس کاربران (JSON) ---
+# ============================================================
+
 def load_users() -> dict:
-    """بارگذاری اطلاعات کاربران از فایل."""
     if not os.path.exists(USERS_FILE):
-        return {} 
+        return {}
     try:
         with open(USERS_FILE, 'r') as f:
             return json.load(f)
@@ -115,30 +140,27 @@ def load_users() -> dict:
         return {}
 
 def save_users(users: dict):
-    """ذخیره اطلاعات کاربران در فایل."""
     with open(USERS_FILE, 'w') as f:
-        json.dump(users, f, indent=4)
+        json.dump(users, f, indent=4, ensure_ascii=False)
 
 def get_user_balance(user_id: int) -> float:
-    """دریافت موجودی کیف پول کاربر. اگر کاربر وجود نداشت، آن را ثبت اولیه می‌کند."""
-    users = load_users()
-    str_user_id = str(user_id) 
-    
-    if str_user_id not in users:
-        users[str_user_id] = {"balance": 0.0, "services": []} 
-        save_users(users)
-        return 0.0
-        
-    return users[str_user_id].get("balance", 0.0)
-
-def update_user_balance(user_id: int, amount_change: float):
-    """به‌روزرسانی موجودی کیف پول کاربر (مثبت برای شارژ، منفی برای خرید). واحد ورودی تومان است."""
     users = load_users()
     str_user_id = str(user_id)
     
     if str_user_id not in users:
         users[str_user_id] = {"balance": 0.0, "services": []}
-        
+        save_users(users)
+        return 0.0
+    
+    return users[str_user_id].get("balance", 0.0)
+
+def update_user_balance(user_id: int, amount_change: float):
+    users = load_users()
+    str_user_id = str(user_id)
+    
+    if str_user_id not in users:
+        users[str_user_id] = {"balance": 0.0, "services": []}
+    
     current_balance = users[str_user_id]["balance"]
     new_balance = current_balance + amount_change
     users[str_user_id]["balance"] = new_balance
@@ -146,34 +168,31 @@ def update_user_balance(user_id: int, amount_change: float):
     save_users(users)
     return new_balance
 
-def add_user_service(user_id: int, config_name: str, sub_link: str, uuid: str, internal_key: str):
-    """ذخیره جزئیات کانفیگ خریداری شده."""
+def add_user_service(user_id: int, config_name: str, sub_link: str, uuid: str, internal_key: str, server_key: str):
+    """ذخیره جزئیات کانفیگ خریداری شده همراه با شناسه سرور"""
     users = load_users()
     str_user_id = str(user_id)
     
-    # اطمینان از وجود بخش services
     if str_user_id not in users or 'services' not in users[str_user_id]:
-         users[str_user_id] = {"balance": users.get(str_user_id, {}).get("balance", 0.0), "services": []}
+        users[str_user_id] = {"balance": users.get(str_user_id, {}).get("balance", 0.0), "services": []}
     
-    # بررسی عدم وجود سرویس با این نام قبلاً (در صورت تمدید، این تابع نباید فراخوانی شود)
     if not any(s['config_name'] == config_name for s in users[str_user_id]['services']):
         users[str_user_id]['services'].append({
             'config_name': config_name,
             'sub_link': sub_link,
             'uuid': uuid,
-            'internal_key': internal_key, 
+            'internal_key': internal_key,
+            'server_key': server_key,
             'purchase_date': datetime.datetime.now().isoformat()
         })
         save_users(users)
-        logger.info(f"New service added for user {user_id}: {config_name}")
+        logger.info(f"New service added for user {user_id}: {config_name} on {server_key}")
 
 def get_user_services(user_id: int) -> list:
-    """دریافت لیست سرویس‌های خریداری شده کاربر."""
     users = load_users()
     return users.get(str(user_id), {}).get('services', [])
 
 def update_user_service_key(user_id: int, config_name: str, new_key: str, new_value: any):
-    """به‌روزرسانی یک فیلد خاص در سرویس کاربر (مثلا sub_link یا uuid)."""
     users = load_users()
     str_user_id = str(user_id)
     
@@ -185,21 +204,26 @@ def update_user_service_key(user_id: int, config_name: str, new_key: str, new_va
                 return True
     return False
 
+# ============================================================
+# --- توابع مدیریت پرداخت در انتظار (JSON) ---
+# ============================================================
 
-## 🗄️ توابع مدیریت وضعیت پرداخت در انتظار (JSON)
 def load_pending_payments() -> dict:
     if not os.path.exists(PENDING_PAYMENTS_FILE): return {}
     try:
         with open(PENDING_PAYMENTS_FILE, 'r') as f:
             return json.load(f)
     except (IOError, json.JSONDecodeError): return {}
+
 def save_pending_payments(payments: dict):
     with open(PENDING_PAYMENTS_FILE, 'w') as f:
-        json.dump(payments, f, indent=4)
+        json.dump(payments, f, indent=4, ensure_ascii=False)
+
 def add_pending_payment(authority: str, user_id: int, amount_rial: int):
     payments = load_pending_payments()
     payments[authority] = {'user_id': user_id, 'amount': amount_rial}
     save_pending_payments(payments)
+
 def get_pending_payment(authority: str) -> tuple[int | None, int | None]:
     payments = load_pending_payments()
     payment_info = payments.get(authority)
@@ -208,13 +232,17 @@ def get_pending_payment(authority: str) -> tuple[int | None, int | None]:
         amount = int(payment_info.get('amount'))
         return user_id, amount
     return None, None
+
 def remove_pending_payment(authority: str):
     payments = load_pending_payments()
     if authority in payments:
         del payments[authority]
         save_pending_payments(payments)
 
-## 🔐 توابع اتصال به درگاه پرداخت 
+# ============================================================
+# --- توابع اتصال به درگاه پرداخت (منتقل شده از فایل 1) ---
+# ============================================================
+
 async def zarinpal_create_request(user_id: int, amount_rial: int, description: str, context: ContextTypes.DEFAULT_TYPE) -> tuple[str | None, str | None]:
     logger.info(f"Creating Zarinpal request for {user_id} with amount {amount_rial} Rials")
     try:
@@ -227,8 +255,10 @@ async def zarinpal_create_request(user_id: int, amount_rial: int, description: s
     except Exception as e:
         logger.error(f"Failed to get bot username from Telegram: {e}")
         return None, None
+    
     callback_url = f"https://t.me/{bot_username}?start=verify_"
-    req_data = {"merchant_id": ZARINPAL_MERCHANT_ID,"amount": amount_rial,"description": description,"callback_url": callback_url,}
+    req_data = {"merchant_id": ZARINPAL_MERCHANT_ID, "amount": amount_rial, "description": description, "callback_url": callback_url}
+    
     try:
         response = requests.post(ZARINPAL_WEBSERVICE, json=req_data, timeout=10)
         response.raise_for_status()
@@ -249,10 +279,10 @@ async def zarinpal_create_request(user_id: int, amount_rial: int, description: s
         return None, None
 
 async def zarinpal_verify_request(authority: str, amount_rial: int) -> bool:
-    req_data = {"merchant_id": ZARINPAL_MERCHANT_ID,"authority": str(authority),"amount": int(amount_rial)}
+    req_data = {"merchant_id": ZARINPAL_MERCHANT_ID, "authority": str(authority), "amount": int(amount_rial)}
     try:
         response = requests.post(ZARINPAL_VERIFY_WEBSERVICE, json=req_data, timeout=10)
-        response.raise_for_status() 
+        response.raise_for_status()
         data = response.json()
         if data.get('data') and data['data'].get('code'):
             code = data['data']['code']
@@ -260,41 +290,40 @@ async def zarinpal_verify_request(authority: str, amount_rial: int) -> bool:
         logger.error(f"Zarinpal Verification Failed (Code {data['data'].get('code')}): {data}")
         return False
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to connect to Zarinpal for verification: {e}") 
+        logger.error(f"Failed to connect to Zarinpal for verification: {e}")
         return False
 
-# 🌟 تابع به‌روز شده: ارسال پیام به لیست ادمین‌ها
 async def verify_zarinpal_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, authority: str, expected_amount_rial: int) -> None:
     if hasattr(update, 'effective_chat'): user_id = update.effective_chat.id
     elif hasattr(update, 'chat'): user_id = update.chat.id
     elif hasattr(update, 'from_user'): user_id = update.from_user.id
     else:
         logger.error("Could not determine user_id in verify_zarinpal_payment_callback"); return
+    
     if hasattr(update, 'effective_user'): effective_user = update.effective_user
     elif hasattr(update, 'from_user'): effective_user = update.from_user
     else: effective_user = None
 
-    success = await zarinpal_verify_request(authority, expected_amount_rial) 
+    success = await zarinpal_verify_request(authority, expected_amount_rial)
 
     if success:
-        charge_amount_toman = expected_amount_rial / 10 
+        charge_amount_toman = expected_amount_rial / 10
         new_balance = update_user_balance(user_id, charge_amount_toman)
-        remove_pending_payment(authority) 
+        remove_pending_payment(authority)
 
         await context.bot.send_message(
             chat_id=user_id,
             text=f"✅ پرداخت شما با موفقیت تایید شد.\n"
-            f"مبلغ **{charge_amount_toman:,.0f} تومان** به کیف پول شما اضافه شد.\n\n" 
-            f"موجودی جدید: **{new_balance:,.0f}** تومان", 
-            parse_mode="Markdown",
+            f"مبلغ {charge_amount_toman:,.0f} تومان به کیف پول شما اضافه شد.\n\n"
+            f"موجودی جدید: {new_balance:,.0f} تومان",
             reply_markup=MAIN_MENU_REPLY_MARKUP
         )
         if effective_user:
-            for admin_id in ADMIN_CHAT_IDS: # ⬅️ حلقه ادمین‌ها
+            for admin_id in ADMIN_CHAT_IDS:
                 try:
                     await context.bot.send_message(
                         admin_id,
-                        f"شارژ موفق کیف پول:\nکاربر: {effective_user.first_name} (ID: {user_id})\nمبلغ: {charge_amount_toman:,.0f} تومان" 
+                        f"شارژ موفق کیف پول:\nکاربر: {effective_user.first_name} (ID: {user_id})\nمبلغ: {charge_amount_toman:,.0f} تومان"
                     )
                 except Exception as e:
                     logger.error(f"Failed to notify admin {admin_id}: {e}")
@@ -305,90 +334,126 @@ async def verify_zarinpal_payment_callback(update: Update, context: ContextTypes
             reply_markup=MAIN_MENU_REPLY_MARKUP
         )
 
-# --- توابع API پنل x-ui ---
-XUI_AUTH_COOKIE = None
-async def xui_login() -> bool:
-    global XUI_AUTH_COOKIE
-    # آدرس لاگین باید همیشه مسیر سفارشی شما را شامل شود
-    login_url = f"{XUI_PANEL_URL}{LOGIN_PATH}" 
-    data = {"username": XUI_USERNAME, "password": XUI_PASSWORD}
+# ============================================================
+# --- توابع API پنل X-UI (سیستم چند سروره) ---
+# ============================================================
+
+async def xui_login(server_key: str) -> bool:
+    """ورود به پنل X-UI برای سرور مشخص"""
+    global XUI_AUTH_COOKIES
+    
+    server_config = SERVERS_CONFIG[server_key]
+    login_url = f"{server_config['xui_panel_url']}{server_config['login_path']}"
+    data = {"username": server_config['xui_username'], "password": server_config['xui_password']}
+    
     try:
-        response = requests.post(login_url, data=data, timeout=5)
+        # verify=False برای نادیده گرفتن خطاهای SSL در سرورهای محلی X-UI
+        response = requests.post(login_url, data=data, timeout=5, verify=False)
         response.raise_for_status()
+        
         if 'session' in response.cookies:
             cookie_value = response.cookies['session']
-            XUI_AUTH_COOKIE = f"session={cookie_value}"
-            logger.info("X-UI login successful and cookie saved (standard).")
+            XUI_AUTH_COOKIES[server_key] = f"session={cookie_value}"
+            logger.info(f"X-UI login successful for {server_key}")
             return True
+        
         if 'set-cookie' in response.headers:
             set_cookie_header = response.headers.get('set-cookie', '')
             match = re.search(r'((?:3x-ui|session|x_session|X_SESSION|panel_session)=[^;]+)', set_cookie_header, re.IGNORECASE)
             if match:
                 full_cookie_string = match.group(1)
-                XUI_AUTH_COOKIE = full_cookie_string.split(';')[0].strip()
-                logger.info(f"X-UI login successful and cookie saved (from Set-Cookie header: {XUI_AUTH_COOKIE.split('=')[0]}).")
+                XUI_AUTH_COOKIES[server_key] = full_cookie_string.split(';')[0].strip()
+                logger.info(f"X-UI login successful for {server_key} (from Set-Cookie header)")
                 return True
+        
         if response.json().get('success') == True:
-            logger.error(f"X-UI login successful but NO VALID SESSION COOKIE was found. Response Headers: {response.headers}")
+            logger.error(f"X-UI login successful for {server_key} but NO VALID SESSION COOKIE was found.")
             return False
-        logger.error(f"X-UI login failed. Response: {response.text}")
+        
+        logger.error(f"X-UI login failed for {server_key}. Response: {response.text}")
         return False
+    
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to connect to X-UI panel for login: {e}")
-        XUI_AUTH_COOKIE = None
+        logger.error(f"Failed to connect to X-UI panel for {server_key}: {e}")
+        XUI_AUTH_COOKIES[server_key] = None
         return False
 
-async def xui_get_headers() -> dict | None:
-    global XUI_AUTH_COOKIE
-    if XUI_AUTH_COOKIE is None:
-        if not await xui_login():
+async def xui_get_headers(server_key: str) -> dict | None:
+    """دریافت Headers اتصال برای سرور مشخص"""
+    global XUI_AUTH_COOKIES
+    
+    if XUI_AUTH_COOKIES.get(server_key) is None:
+        if not await xui_login(server_key):
             return None
-    return {"Cookie": XUI_AUTH_COOKIE}
+    
+    return {"Cookie": XUI_AUTH_COOKIES[server_key]}
 
-# ✅ اصلاح شد: رفع خطای SyntaxError (انتقال global به ابتدای تابع)
-async def xui_check_config_name_exists(config_name: str) -> bool | None:
-    global XUI_AUTH_COOKIE 
-    headers = await xui_get_headers()
+async def xui_check_config_name_exists(server_key: str, config_name: str) -> bool | None:
+    """بررسی تکراری نبودن نام در سرور مشخص"""
+    global XUI_AUTH_COOKIES
+    
+    headers = await xui_get_headers(server_key)
     if headers is None: return None
-    # از BASE_PATH استفاده می‌کند که اکنون شامل مسیر سفارشی است: /fRCZlF8gq0/panel/api/inbounds/list
-    inbound_list_url = f"{XUI_PANEL_URL}{BASE_PATH}/panel/api/inbounds/list" 
+    
+    server_config = SERVERS_CONFIG[server_key]
+    inbound_id = server_config['inbound_id']
+    base_path = server_config['base_path']
+    xui_panel_url = server_config['xui_panel_url']
+    
+    inbound_list_url = f"{xui_panel_url}{base_path}/panel/api/inbounds/list"
+    
     try:
-        response = requests.get(inbound_list_url, headers=headers, timeout=10)
+        response = requests.get(inbound_list_url, headers=headers, timeout=10, verify=False)
         if response.status_code == 401:
-            XUI_AUTH_COOKIE = None
-            logger.warning("X-UI cookie expired. Retrying login...")
-            return await xui_check_config_name_exists(config_name)
+            XUI_AUTH_COOKIES[server_key] = None
+            logger.warning(f"X-UI cookie expired for {server_key}. Retrying login...")
+            return await xui_check_config_name_exists(server_key, config_name)
+        
         response.raise_for_status()
         result = response.json()
+        
         if result.get('success'):
             inbounds = result.get('obj', [])
-            target_inbound = next((item for item in inbounds if item.get('id') == INBOUND_ID), None)
+            target_inbound = next((item for item in inbounds if item.get('id') == inbound_id), None)
             if not target_inbound:
-                 logger.error(f"Inbound with ID {INBOUND_ID} not found in list."); return None
+                logger.error(f"Inbound with ID {inbound_id} not found in {server_key}")
+                return None
+            
             settings = json.loads(target_inbound.get('settings', '{}'))
             clients = settings.get('clients', [])
             for client in clients:
                 if client.get('email') == config_name:
-                    return True 
+                    return True
             return False
         else:
-            logger.error(f"X-UI failed to get clients list: {result.get('msg')}"); return None
+            logger.error(f"X-UI failed to get clients list for {server_key}: {result.get('msg')}")
+            return None
+    
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to connect to X-UI panel for checking client list: {e}"); return None
+        logger.error(f"Failed to connect to X-UI panel for {server_key}: {e}")
+        return None
 
-# ✅ اصلاح شد: رفع خطای SyntaxError (انتقال global به ابتدای تابع)
-async def xui_add_client(user_id: int, volume_gb: int, config_name: str, days: int, limit_ip: int, existing_uuid: str = None, existing_sub_id: str = None) -> tuple[str | None, str | str | None]:
-    global XUI_AUTH_COOKIE 
-    headers = await xui_get_headers()
+async def xui_add_client(server_key: str, user_id: int, volume_gb: int, config_name: str, days: int, limit_ip: int, existing_uuid: str = None, existing_sub_id: str = None) -> tuple[str | None, str | None, str | None]:
+    """ایجاد کلاینت در سرور مشخص"""
+    global XUI_AUTH_COOKIES
+    
+    headers = await xui_get_headers(server_key)
     if headers is None: return None, None, None
-    # از BASE_PATH استفاده می‌کند که اکنون شامل مسیر سفارشی است: /fRCZlF8gq0/panel/api/inbounds/addClient
-    add_url = f"{XUI_PANEL_URL}{BASE_PATH}/panel/api/inbounds/addClient"
-    volume_bytes = volume_gb * 1024 * 1024 * 1024 
+    
+    server_config = SERVERS_CONFIG[server_key]
+    inbound_id = server_config['inbound_id']
+    base_path = server_config['base_path']
+    xui_panel_url = server_config['xui_panel_url']
+    server_address = server_config['server_address']
+    server_port_subscription = server_config['server_port_subscription']
+    subscribe_path = server_config['subscribe_path']
+    
+    add_url = f"{xui_panel_url}{base_path}/panel/api/inbounds/addClient"
+    volume_bytes = volume_gb * 1024 * 1024 * 1024
     
     client_uuid = existing_uuid if existing_uuid else str(uuid.uuid4())
-    sub_id = existing_sub_id if existing_sub_id else config_name 
+    sub_id = existing_sub_id if existing_sub_id else config_name
 
-    # --- محاسبه زمان انقضا (در میلی‌ثانیه از Epoch) ---
     if days > 0:
         expiry_time_ms = int((time.time() + days * 24 * 3600) * 1000)
     else:
@@ -397,12 +462,12 @@ async def xui_add_client(user_id: int, volume_gb: int, config_name: str, days: i
     client_settings_object = {
         "clients": [
             {
-                "id": client_uuid, # UUID حفظ شده یا جدید
+                "id": client_uuid,
                 "flow": "",
                 "email": config_name,
-                "limitIp": limit_ip,    
-                "totalGB": volume_bytes, 
-                "expiryTime": expiry_time_ms, 
+                "limitIp": limit_ip,
+                "totalGB": volume_bytes,
+                "expiryTime": expiry_time_ms,
                 "enable": True,
                 "tgId": "",
                 "subId": sub_id
@@ -410,262 +475,268 @@ async def xui_add_client(user_id: int, volume_gb: int, config_name: str, days: i
         ]
     }
     
-    data = {"id": INBOUND_ID,"settings": json.dumps(client_settings_object)}
+    data = {"id": inbound_id, "settings": json.dumps(client_settings_object)}
     
     if 'Content-Type' in headers:
         del headers['Content-Type']
-        
+    
     try:
-        response = requests.post(add_url, headers=headers, data=data, timeout=10)
+        response = requests.post(add_url, headers=headers, data=data, timeout=10, verify=False)
         if response.status_code == 401:
-            XUI_AUTH_COOKIE = None
-            logger.warning("X-UI cookie expired. Retrying login...")
-            return await xui_add_client(user_id, volume_gb, config_name, days, limit_ip, existing_uuid, existing_sub_id) 
-            
+            XUI_AUTH_COOKIES[server_key] = None
+            logger.warning(f"X-UI cookie expired for {server_key}. Retrying login...")
+            return await xui_add_client(server_key, user_id, volume_gb, config_name, days, limit_ip, existing_uuid, existing_sub_id)
+        
         response.raise_for_status()
         result = response.json()
         
         if result.get('success'):
-            logger.info(f"X-UI client created for user {user_id}. UUID: {client_uuid} with name: {config_name}")
-            vmess_obj = PROTOCOL_SETTINGS.copy()
+            logger.info(f"X-UI client created on {server_key} for user {user_id}. UUID: {client_uuid} with name: {config_name}")
+            
+            vmess_obj = get_protocol_settings(server_key).copy()
             vmess_obj["id"] = client_uuid
             vmess_obj["ps"] = config_name
-            vmess_json = json.dumps(vmess_obj) 
+            vmess_json = json.dumps(vmess_obj)
             vmess_base64 = base64.b64encode(vmess_json.encode('utf-8')).decode('utf-8')
             vmess_link = f"vmess://{vmess_base64}"
             
-            # 🌟 اصلاح شد: BASE_PATH از لینک سابسکریپشن حذف شد
-            sub_link = f"{XUI_PANEL_URL.split(':')[0]}://{SERVER_ADDRESS}:{SERVER_PORT_SUBSCRIPTION}{SUBSCRIBE_PATH}{sub_id}" 
+            sub_link = f"{xui_panel_url.split(':')[0]}://{server_address}:{server_port_subscription}{subscribe_path}{sub_id}"
             
             return vmess_link, client_uuid, sub_link
-
         else:
-            logger.error(f"X-UI failed to add client: {result.get('msg')}. Full response: {result}")
+            logger.error(f"X-UI failed to add client on {server_key}: {result.get('msg')}. Full response: {result}")
             return None, None, None
-
+    
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to connect to X-UI panel for adding client: {e}")
+        logger.error(f"Failed to connect to X-UI panel for {server_key}: {e}")
         return None, None, None
 
-
-# ✅ تابع اصلاح شده: به‌روزرسانی سرویس (حفظ حجم مصرفی و limitIp)
-# ✅ اصلاح شده: دستور global به ابتدای تابع منتقل شد
-async def xui_update_client_v2(user_id: int, config_name: str, volume_add: int, days_add: int) -> tuple[bool, float, int]:
-    """
-    Updates the client's volume and expiry time cumulatively, and preserves usage (up/down).
-    Also preserves the existing limitIp setting.
+async def xui_update_client_v2(server_key: str, user_id: int, config_name: str, volume_add: int, days_add: int) -> tuple[bool, float, int]:
+    """به‌روزرسانی کلاینت در سرور مشخص"""
+    global XUI_AUTH_COOKIES
     
-    Returns: (success: bool, new_total_gb: float, new_expiry_days: int)
-    """
-    global XUI_AUTH_COOKIE
-    headers = await xui_get_headers()
+    headers = await xui_get_headers(server_key)
     if headers is None: return False, 0.0, 0
     
-    # 1. Fetch the entire inbound list (to get the full inbound object)
-    inbound_list_url = f"{XUI_PANEL_URL}{BASE_PATH}/panel/api/inbounds/list"
+    server_config = SERVERS_CONFIG[server_key]
+    inbound_id = server_config['inbound_id']
+    base_path = server_config['base_path']
+    xui_panel_url = server_config['xui_panel_url']
+    
+    inbound_list_url = f"{xui_panel_url}{base_path}/panel/api/inbounds/list"
+    
     try:
-        response = requests.get(inbound_list_url, headers=headers, timeout=10)
+        response = requests.get(inbound_list_url, headers=headers, timeout=10, verify=False)
         if response.status_code == 401:
-            XUI_AUTH_COOKIE = None
-            return await xui_update_client_v2(user_id, config_name, volume_add, days_add)
-        response.raise_for_status() 
+            XUI_AUTH_COOKIES[server_key] = None
+            return await xui_update_client_v2(server_key, user_id, config_name, volume_add, days_add)
+        
+        response.raise_for_status()
         result = response.json()
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch inbound list for update: {e}"); return False, 0.0, 0
+        logger.error(f"Failed to fetch inbound list for update on {server_key}: {e}")
+        return False, 0.0, 0
 
     if not result.get('success'):
-        logger.error(f"X-UI failed to get clients list for update: {result.get('msg')}"); return False, 0.0, 0
+        logger.error(f"X-UI failed to get clients list for update on {server_key}: {result.get('msg')}")
+        return False, 0.0, 0
 
-    # Find the target inbound object
     inbounds = result.get('obj', [])
-    target_inbound_obj = next((item for item in inbounds if item.get('id') == INBOUND_ID), None)
+    target_inbound_obj = next((item for item in inbounds if item.get('id') == inbound_id), None)
     if not target_inbound_obj:
-        logger.error(f"Inbound ID {INBOUND_ID} not found for update."); return False, 0.0, 0
+        logger.error(f"Inbound ID {inbound_id} not found for update on {server_key}")
+        return False, 0.0, 0
 
-    # 2. Modify the target client data within the inbound object
     try:
         settings = json.loads(target_inbound_obj.get('settings', '{}'))
         clients = settings.get('clients', [])
         
         target_client_index = next((i for i, client in enumerate(clients) if client.get('email') == config_name), -1)
         if target_client_index == -1:
-            logger.error(f"Client {config_name} not found in inbound {INBOUND_ID} for update."); return False, 0.0, 0
-            
+            logger.error(f"Client {config_name} not found on {server_key} for update")
+            return False, 0.0, 0
+        
         target_client = clients[target_client_index]
         
         current_up = target_client.get('up', 0)
         current_down = target_client.get('down', 0)
-        current_limit_ip = target_client.get('limitIp', 1) 
+        current_limit_ip = target_client.get('limitIp', 1)
 
-        # --- محاسبه حجم تجمعی و نهایی ---
         current_total_bytes = target_client.get('totalGB', 0)
         current_total_gb = current_total_bytes / (1024**3)
         new_total_gb = current_total_gb + volume_add
         new_total_bytes = int(new_total_gb * (1024**3))
 
-        # --- محاسبه زمان انقضای تجمعی و نهایی ---
         current_expiry_ms = target_client.get('expiryTime', 0)
         current_time_seconds = time.time()
 
         if current_expiry_ms == 0:
-            # اگر نامحدود بوده، از زمان حال + روزهای جدید
             new_expiry_seconds = current_time_seconds + days_add * 24 * 3600
         else:
             current_expiry_seconds = current_expiry_ms / 1000
-            # اگر منقضی شده، از زمان حال + روزهای جدید. اگر فعال است، به انتهای زمان فعال اضافه می‌شود.
             start_time = max(current_time_seconds, current_expiry_seconds)
             new_expiry_seconds = start_time + days_add * 24 * 3600
         
         new_expiry_ms = int(new_expiry_seconds * 1000)
-        # محاسبه تعداد روزهای باقیمانده برای نمایش
         new_expiry_days = int((new_expiry_seconds - current_time_seconds) / (24 * 3600))
         
-        # --- اعمال تغییرات و **حفظ** مصرف و Limit IP ---
         target_client['totalGB'] = new_total_bytes
         target_client['expiryTime'] = new_expiry_ms
-        target_client['up'] = current_up 
-        target_client['down'] = current_down 
-        target_client['limitIp'] = current_limit_ip 
+        target_client['up'] = current_up
+        target_client['down'] = current_down
+        target_client['limitIp'] = current_limit_ip
         
-        # جایگزینی کلاینت به‌روز شده در لیست
         clients[target_client_index] = target_client
-        
-        # بازسازی شیء تنظیمات کامل
         settings['clients'] = clients
-        
-        # به‌روزرسانی در شیء inbound اصلی
         target_inbound_obj['settings'] = json.dumps(settings)
         
     except json.JSONDecodeError as e:
-        logger.error(f"JSON Decode Error in update client settings: {e}"); return False, 0.0, 0
+        logger.error(f"JSON Decode Error on {server_key}: {e}")
+        return False, 0.0, 0
     except Exception as e:
-        logger.error(f"General error during client update calculation: {e}"); return False, 0.0, 0
-
-
-    # 3. Submit the updated inbound object to the X-UI panel
-    update_url = f"{XUI_PANEL_URL}{BASE_PATH}/panel/api/inbounds/update/{INBOUND_ID}"
-    data = {"remark": target_inbound_obj['remark'], "enable": target_inbound_obj['enable'], 
-            "protocol": target_inbound_obj['protocol'], "port": target_inbound_obj['port'], 
-            "expiryTime": target_inbound_obj['expiryTime'], "total": target_inbound_obj['total'],
-            "settings": target_inbound_obj['settings'], "streamSettings": target_inbound_obj['streamSettings'],
-            "sniffing": target_inbound_obj['sniffing']}
-
-    if 'Content-Type' in headers: del headers['Content-Type']
+        logger.error(f"General error during client update on {server_key}: {e}")
+        return False, 0.0, 0
+    
+    update_url = f"{xui_panel_url}{base_path}/panel/api/inbounds/update/{inbound_id}"
+    
+    data = {
+        "remark": target_inbound_obj['remark'],
+        "enable": target_inbound_obj['enable'],
+        "protocol": target_inbound_obj['protocol'],
+        "port": target_inbound_obj['port'],
+        "expiryTime": target_inbound_obj['expiryTime'],
+        "total": target_inbound_obj['total'],
+        "settings": target_inbound_obj['settings'],
+        "streamSettings": target_inbound_obj['streamSettings'],
+        "sniffing": target_inbound_obj['sniffing']
+    }
+    
+    if 'Content-Type' in headers:
+        del headers['Content-Type']
         
     try:
-        response = requests.post(update_url, headers=headers, data=data, timeout=10)
+        response = requests.post(update_url, headers=headers, data=data, timeout=10, verify=False)
         if response.status_code == 401:
-            XUI_AUTH_COOKIE = None
-            return await xui_update_client_v2(user_id, config_name, volume_add, days_add) 
+            XUI_AUTH_COOKIES[server_key] = None
+            return await xui_update_client_v2(server_key, user_id, config_name, volume_add, days_add)
             
         response.raise_for_status()
         result = response.json()
         
         if result.get('success'):
-            logger.info(f"X-UI client {config_name} updated successfully. New GB: {new_total_gb:,.2f}, New Days: {new_expiry_days}")
+            logger.info(f"X-UI client {config_name} updated on {server_key}. Added {volume_add} GB, {days_add} days.")
             return True, new_total_gb, new_expiry_days
         else:
-            logger.error(f"X-UI failed to update client: {result.get('msg')}. Full response: {result}")
+            logger.error(f"X-UI failed to update client on {server_key}: {result.get('msg')}")
             return False, 0.0, 0
-
+            
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to connect to X-UI panel for client update: {e}")
+        logger.error(f"Failed to connect to X-UI panel for update on {server_key}: {e}")
         return False, 0.0, 0
 
-
-# ✅ تابع اصلاح شده: حذف فراخوانی API ناموفق /clientList 
-# ✅ اصلاح شده: دستور global به ابتدای تابع منتقل شد
-async def xui_get_client_info_by_name(config_name: str) -> tuple[int | None, dict | None]:
-    """ 
-    پیدا کردن جزئیات کلاینت (client_data) با استفاده از نام (email) از API اصلی.
-    اولین مقدار خروجی (client_id_row) همیشه None برگردانده می‌شود.
-    """
-    global XUI_AUTH_COOKIE 
-    headers = await xui_get_headers()
-    if headers is None: logger.error(f"Failed to get headers for fetching client info for {config_name}"); return None, None
-    inbound_list_url = f"{XUI_PANEL_URL}{BASE_PATH}/panel/api/inbounds/list" 
-    logger.info(f"DEBUG: Checking inbound list at: {inbound_list_url}")
+async def xui_get_client_info_by_name(server_key: str, config_name: str) -> tuple[int | None, dict | None]:
+    """دریافت اطلاعات و ایندکس کلاینت با نام (ایمیل) در سرور مشخص"""
+    global XUI_AUTH_COOKIES
+    
+    headers = await xui_get_headers(server_key)
+    if headers is None: return None, None
+    
+    server_config = SERVERS_CONFIG[server_key]
+    inbound_id = server_config['inbound_id']
+    base_path = server_config['base_path']
+    xui_panel_url = server_config['xui_panel_url']
+    
+    inbound_list_url = f"{xui_panel_url}{base_path}/panel/api/inbounds/list"
+    
     try:
-        response = requests.get(inbound_list_url, headers=headers, timeout=10)
-        logger.info(f"DEBUG: inbound/list Status Code: {response.status_code}")
+        response = requests.get(inbound_list_url, headers=headers, timeout=10, verify=False)
         if response.status_code == 401:
-            XUI_AUTH_COOKIE = None
-            logger.warning("X-UI cookie expired. Retrying login...")
-            return await xui_get_client_info_by_name(config_name)
+            XUI_AUTH_COOKIES[server_key] = None
+            return await xui_get_client_info_by_name(server_key, config_name)
+        
         response.raise_for_status()
         result = response.json()
+        
         if result.get('success'):
             inbounds = result.get('obj', [])
-            target_inbound = next((item for item in inbounds if item.get('id') == INBOUND_ID), None)
+            target_inbound = next((item for item in inbounds if item.get('id') == inbound_id), None)
             if not target_inbound:
-                logger.error(f"Inbound ID {INBOUND_ID} not found in the list.")
+                logger.error(f"Inbound with ID {inbound_id} not found on {server_key}")
                 return None, None
+            
             settings = json.loads(target_inbound.get('settings', '{}'))
             clients = settings.get('clients', [])
-            target_client_info = next((client for client in clients if client.get('email') == config_name), None)
             
-            if target_client_info:
-                logger.info(f"DEBUG: Client settings for {config_name} fetched successfully.")
-                return None, target_client_info
-            else:
-                logger.warning(f"Client {config_name} not found in settings for inbound {INBOUND_ID}.")
-                return None, None
-        else:
-            logger.error(f"X-UI API failed to list inbounds: {result.get('msg')}")
+            target_client_index = next((i for i, client in enumerate(clients) if client.get('email') == config_name), -1)
+            
+            if target_client_index != -1:
+                return target_client_index, clients[target_client_index]
+            
+            logger.warning(f"Client {config_name} not found on {server_key}")
             return None, None
+        else:
+            logger.error(f"X-UI failed to get clients list for {server_key}: {result.get('msg')}")
+            return None, None
+    
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to connect to X-UI panel for client info: {e}")
+        logger.error(f"Failed to connect to X-UI panel on {server_key}: {e}")
         return None, None
-# --- پایان توابع API پنل x-ui ---
 
-# --- هندلر های اصلی ---
-# 🌟 تابع اصلاح شده: رفع مشکل استخراج Authority از لینک بازگشت زرین‌پال
+# ============================================================
+# --- توابع کمکی جدید ---
+# ============================================================
+
+def convert_bytes_to_display(bytes_val: int) -> str:
+    """تبدیل بایت به نمایش خواناتر (MB/GB/TB)"""
+    if bytes_val < 0: return "0 MB"
+    if bytes_val < 1024: return f"{bytes_val} B"
+    if bytes_val < 1024**2: return f"{bytes_val / 1024:.2f} KB"
+    if bytes_val < 1024**3: return f"{bytes_val / (1024**2):.2f} MB"
+    if bytes_val < 1024**4: return f"{bytes_val / (1024**3):.2f} GB"
+    return f"{bytes_val / (1024**4):.2f} TB"
+
+# ============================================================
+# --- هندلرها ---
+# ============================================================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """هندلر دستور /start"""
+    """هندلر دستور /start - منطق بررسی پرداخت از فایل 1 منتقل شد"""
     user = update.effective_user
     
-    # بررسی پارامتر start برای پرداخت زرین‌پال
+    # --- منطق بررسی پرداخت (منتقل شده از فایل 1) ---
     if context.args and context.args[0].startswith('verify_'):
         
-        # --- بخش اصلاح شده برای استخراج Authority ---
-        # ترکیب متن پیام و آرگومان‌های start برای اطمینان از پوشش همه حالات
         full_text = (update.effective_message.text if update.effective_message else "") + ' ' + context.args[0]
         authority = None
         
-        # 1. جستجو برای الگوی رایج زرین‌پال: Authority=A000...
+        # 1. جستجو برای الگوی رایج زرین‌پال
         if 'Authority=' in full_text:
-            # استخراج دقیق: جدا کردن بعد از Authority= و قبل از & یا فضای خالی
             parts = full_text.split('Authority=')
             if len(parts) > 1:
-                # این خط نیاز به اصلاح جزئی دارد تا فقط 36 کاراکتر را بگیرد اگر بعد از Authority= باشد
                 temp_auth = parts[-1].split('&')[0].split('_')[-1].split(' ')[0]
                 if len(temp_auth) == 36:
                     authority = temp_auth
         
-        # 2. اگر Authority پیدا نشد، از regex برای یافتن رشته 36 کاراکتری بعد از verify_ استفاده می‌کنیم
+        # 2. جستجو برای رشته 36 کاراکتری
         if not authority:
-            # جستجو برای یک رشته ۳۶ کاراکتری (A-Z, a-z, 0-9)
             auth_match = re.search(r'([A-Za-z0-9]{36})', full_text)
             if auth_match:
                  authority = auth_match.group(1)
 
-        # Log the extracted authority for debugging
         if authority and len(authority) == 36:
             logger.info(f"Zarinpal callback: Authority extracted successfully: {authority}")
         else:
             authority = None
-            logger.error(f"AUTHORITY IS MISSING OR MALFORMED IN PAYLOAD. Payload: {context.args[0]}, Message Text: {update.effective_message.text}")
-        # --- پایان بخش اصلاح شده ---
+            logger.error(f"AUTHORITY IS MISSING OR MALFORMED. Payload: {context.args[0]}")
 
         if authority:
             user_id, expected_amount_rial = get_pending_payment(authority)
             
             if user_id and expected_amount_rial:
-                # حذف پیام حاوی لینک پرداخت اگر وجود داشته باشد
+                # حذف پیام لینک دار برای تمیزی
                 message_to_edit = update.effective_message if update.effective_message else update.message
                 if message_to_edit:
                     try:
-                        # حذف پیام حاوی /start verify_... برای تمیز ماندن چت
                         await message_to_edit.delete()
                     except error.BadRequest:
                         pass
@@ -676,8 +747,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await update.message.reply_text("❌ پرداخت شما در لیست پرداخت‌های در انتظار پیدا نشد یا قبلاً تأیید شده است.", reply_markup=MAIN_MENU_REPLY_MARKUP)
                 return
 
-        # اگر Authority پیدا نشد، به کاربر دکمه پیگیری دستی داده می‌شود
-        logger.error("AUTHORITY IS MISSING IN PAYLOAD. Triggering manual check button.")
+        # دکمه پیگیری دستی در صورت عدم یافتن اتوریتی
         keyboard = [[InlineKeyboardButton("🔍 پیگیری پرداخت ناموفق", callback_data="check_pending_payment")]]
         await update.message.reply_text(
             "⚠️ پرداخت شما در لیست در انتظار است. اگر وجه کسر شده است، لطفاً کد پیگیری را به پشتیبانی ارسال کنید.",
@@ -685,70 +755,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
         
-    # شروع عادی
-    await update.message.reply_html(
-        f"سلام {user.mention_html()}!\nبه ربات فروش VPN خوش آمدید. لطفاً یک گزینه را انتخاب کنید:",
-        reply_markup=MAIN_MENU_REPLY_MARKUP,
-    )
-
-async def check_pending_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query; await query.answer()
-    user_id = query.from_user.id
-    
-    await query.edit_message_text("در حال بررسی پرداخت‌های در انتظار...")
-    
-    pending_payments = load_pending_payments()
-    found_payment = None
-    for authority, info in pending_payments.items():
-        if str(info['user_id']) == str(user_id):
-            found_payment = (authority, info['amount']); break
-            
-    if found_payment:
-        authority, expected_amount_rial = found_payment
-        await verify_zarinpal_payment_callback(query.message, context, authority, expected_amount_rial)
-    else:
-        await context.bot.send_message(user_id, "❌ هیچ پرداخت در انتظاری برای حساب شما پیدا نشد. لطفاً دوباره امتحان کنید.", reply_markup=MAIN_MENU_REPLY_MARKUP)
-
-# 🌟 تابع جدید: هندلر لغو پرداخت
-async def cancel_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer("عملیات پرداخت لغو شد.") 
-    
-    user_id = query.from_user.id
-    
-    # 1. استخراج authority از callback_data و حذف رکورد پرداخت در انتظار
-    try:
-        authority = query.data.split("cancel_payment_")[1]
-        remove_pending_payment(authority) # تابع مربوط به حذف از دیتابیس
-    except IndexError:
-        logger.error("Could not extract authority from cancel_payment callback data.")
-
-    # 2. ویرایش پیام اصلی برای اعلام لغو
-    try:
-        await query.edit_message_text(
-            "❌ **لغو پرداخت**\n\nعملیات شارژ کیف پول لغو شد و به منوی اصلی بازگشتید.",
-            reply_markup=None, # حذف دکمه‌های شیشه‌ای
-            parse_mode="Markdown"
-        )
-    except error.BadRequest:
-        # اگر پیام قابل ویرایش نباشد، یک پیام جدید ارسال می‌کند.
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="❌ **لغو پرداخت**\n\nعملیات شارژ کیف پول لغو شد و به منوی اصلی بازگشتید.",
-            parse_mode="Markdown"
-        )
-        
-    # 3. ارسال کیبورد منوی اصلی
-    await context.bot.send_message(
-        chat_id=user_id,
-        text="یک گزینه را انتخاب کنید:",
+    # --- پیام خوش‌آمدگویی (از فایل 2 حفظ شد) ---
+    await update.message.reply_text(
+        f"سلام {user.first_name}، به ربات فروش v2ray خوش آمدید!\n\nلطفاً یک گزینه را از منوی زیر انتخاب کنید:",
         reply_markup=MAIN_MENU_REPLY_MARKUP
     )
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error and send a message to admins."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
     
-    # پایان دادن به ConversationHandler جاری (اگر فعال باشد)
-    return ConversationHandler.END 
+    try:
+        if update and update.effective_user and update.effective_user.id:
+            user_id = update.effective_user.id
+            if isinstance(context.error, error.Conflict):
+                return
+            
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="❌ متأسفانه خطایی در عملکرد ربات رخ داد. لطفاً دوباره امتحان کنید یا با پشتیبانی تماس بگیرید.",
+                reply_markup=MAIN_MENU_REPLY_MARKUP
+            )
+        
+        error_message = f"**❌ خطای جدی در ربات!**\n\n`{context.error}`\n\nUpdate: `{update}`"
+        for admin_id in ADMIN_CHAT_IDS:
+            await context.bot.send_message(admin_id, error_message, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"Failed to handle error or notify user/admin: {e}")
 
 async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش موجودی کیف پول و مشخصات کاربر"""
     balance = get_user_balance(update.effective_user.id)
     num_services = len(get_user_services(update.effective_user.id))
     
@@ -763,704 +800,1032 @@ async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(
         message_text,
         parse_mode="Markdown",
-        reply_markup=MAIN_MENU_REPLY_MARKUP
     )
 
-async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """نمایش لیست پلن‌های قابل خرید. (رفع مشکل AttributeError)"""
+# 🌟 انتخاب سرور قبل از انتخاب سرویس
+async def select_server_for_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """نمایش لیست سرورها برای خرید"""
+    if update.callback_query: chat_id = update.callback_query.message.chat_id
+    else: chat_id = update.effective_chat.id
     keyboard = []
-    for key, panel in SERVICES.items():
-        callback_data = f"DETAILS_{key}"
-        volume_display = panel['volume'].replace(' گیگ', 'GB')
-        button_text = f"🔹 {panel['label']} ({volume_display} - {panel['price_toman']:,.0f} تومان)"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-        
+    for server_key, server_config in SERVERS_CONFIG.items():
+        if server_config.get('active', 1):
+            button_text = server_config['display_name']
+            callback_data = f"SELECT_SERVER_{server_key}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+        else:
+            logger.info(f"Server {server_key} is inactive and hidden from purchase list.")
+            
+    if not keyboard:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="❌ متأسفانه در حال حاضر هیچ سرور فعالی برای خرید وجود ندارد. لطفاً بعداً تلاش کنید.",
+            reply_markup=MAIN_MENU_REPLY_MARKUP
+        )
+        return ConversationHandler.END
+
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # 🌟 اصلاح شده: استفاده از context.bot.send_message برای رفع خطای AttributeError
     await context.bot.send_message(
-        chat_id=update.effective_chat.id, 
-        text=(
-            "**🛍️ لیست سرویس‌های قابل خرید:**\n\n"
-            "برای مشاهده جزئیات بیشتر یا خرید، روی پلن مورد نظر کلیک کنید:"
-        ),
+        chat_id=chat_id,
+        text="**🌍 لطفاً یک سرور را انتخاب کنید:**",
         reply_markup=reply_markup,
         parse_mode="Markdown"
     )
+    context.user_data['in_conversation'] = True
+    context.user_data['purchase_type'] = 'new'
+    return STATE_SELECT_SERVER
 
-async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """هندلر جامع برای دکمه‌های شیشه‌ای (Inline Buttons)"""
+# 🌟 نمایش لیست پلن‌ها بعد از انتخاب سرور
+async def select_service_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """نمایش لیست پلن‌های قابل خرید برای سرور انتخاب شده"""
     query = update.callback_query
-    await query.answer()
-    data = query.data
+    await query.answer("در حال بارگذاری لیست پلن‌ها...")
     
-    if data.startswith("DETAILS_"):
-        internal_key = data.split("DETAILS_")[1]
-        
-        panel_info = SERVICES.get(internal_key)
-        if not panel_info:
-            await query.edit_message_text("❌ خطای داخلی: پلن نامعتبر.", reply_markup=MAIN_MENU_REPLY_MARKUP); return
-        
-        buy_callback_data = f"START_BUY_CONV_{internal_key}_{panel_info['price_toman']}"
-        
-        keyboard = [
-            [InlineKeyboardButton(f"✅ تایید و خرید ({panel_info['price_toman']:,.0f} تومان)", callback_data=buy_callback_data)],
-            [InlineKeyboardButton("🔙 بازگشت به لیست پلن‌ها", callback_data="back_to_select_service")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        volume_display = panel_info['volume'].replace(' گیگ', 'GB')
-        message_text = (
-            f"**جزئیات پلن {panel_info['label']}**\n\n"
-            f"**حجم ماهانه:** {volume_display}\n"
-            f"**مدت اعتبار:** {panel_info['days']} روز\n"
-            f"**👥 تعداد کاربر پیشنهادی:** {panel_info['users']} نفر\n"
-            f"**💰 قیمت نهایی:** {panel_info['price_toman']:,.0f} تومان\n"
-            f"--- \n"
-            f"**توضیحات سرویس:**\n"
-            f"{panel_info['description']}"
-        )
-        
-        await query.edit_message_text(
-            message_text,
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
-        
-    elif data == "back_to_select_service":
-        await query.message.delete()
-        await select_service(update, context)
-        
-    elif data == "back_to_services":
-        await query.message.delete()
-        await my_services(update, context)
-
-    elif data == "check_pending_payment":
-        # این هندلر جداگانه تعریف شده است، اما برای احتیاط اینجا هم باشد
-        await check_pending_payment_callback(update, context)
-
+    if query.data.startswith('SELECT_SERVER_'):
+        server_key = query.data.split('SELECT_SERVER_')[1]
     else:
-        # اگر دیتای ناشناخته‌ای رسید
-        await query.edit_message_text("دستور نامعتبر.", reply_markup=MAIN_MENU_REPLY_MARKUP)
-
-
-# --- هندلر های Conversation برای خرید اولیه --- 
-
-async def prompt_for_config_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query; await query.answer("Loading...")
+        server_key = context.user_data.get('selected_server')
+    
+    server_config = SERVERS_CONFIG.get(server_key)
+    
+    if not server_config:
+        # edit inline message (no ReplyKeyboardMarkup)
+        try:
+            await query.edit_message_text("❌ خطای سرور. لطفاً دوباره تلاش کنید.")
+        except error.BadRequest:
+            pass
+        await send_main_menu(query.from_user.id, context)
+        return ConversationHandler.END
+        
+    context.user_data['selected_server'] = server_key
+    context.user_data['server_display_name'] = server_config['display_name']
+    
+    keyboard = []
+    for internal_key, info in SERVICES.items():
+        volume_display = info['volume'].replace(' گیگ', 'GB')
+        button_text = f"🔹 {info['label']} ({volume_display}, {info['days']} روز) - {info['price_toman']:,.0f} تومان"
+        callback_data = f"SERVICE_DETAILS_PLAN_{internal_key}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+        
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت به لیست سرورها", callback_data="back_to_select_server")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    message_text = (
+        f"**🛒 خرید سرویس ({server_config['display_name']})**\n\n"
+        "لطفاً پلن مورد نظر خود را انتخاب کنید تا جزئیات و توضیحات آن را مشاهده نمایید:"
+    )
     
     try:
-        data_string = query.data.split('START_BUY_CONV_')[1]
-        internal_key, price_toman_str = data_string.rsplit('_', 1)
-        price_toman = int(price_toman_str)
-    except (IndexError, ValueError):
-        logger.error(f"Failed to unpack START_BUY_CONV_ data: {query.data}")
-        await query.edit_message_text("❌ خطای داده خرید. لطفاً دوباره تلاش کنید.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="back_to_select_service")]]))
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except error.BadRequest:
+        await context.bot.send_message(query.from_user.id, message_text, parse_mode="Markdown", reply_markup=reply_markup)
+        
+    return STATE_SELECT_SERVER
+
+# ---------------------------
+# FIXED prompt_for_config_name
+# ---------------------------
+async def prompt_for_config_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """درخواست نام کانفیگ قبل از خرید (نسخه اصلاح‌شده: ویرایش پیام inline با InlineKeyboard و ارسال ReplyKeyboard به‌صورت پیام جدا)"""
+    query = update.callback_query
+    await query.answer("در حال بارگذاری...")
+    
+    try:
+        # Support both SERVICE_DETAILS_PLAN_ and CONFIRM_PLAN_PURCHASE_ entry points
+        if query.data.startswith('CONFIRM_PURCHASE_') or query.data.startswith('CONFIRM_PLAN_PURCHASE_'):
+            # some flows use CONFIRM_PLAN_PURCHASE_ (from previous versions)
+            if 'CONFIRM_PLAN_PURCHASE_' in query.data:
+                internal_key = query.data.split('CONFIRM_PLAN_PURCHASE_')[1]
+            else:
+                internal_key = query.data.split('CONFIRM_PURCHASE_')[1]
+        elif query.data.startswith('SERVICE_DETAILS_PLAN_'):
+            internal_key = query.data.split('SERVICE_DETAILS_PLAN_')[1]
+        else:
+            # fallback: try generic split
+            internal_key = query.data.split('_')[-1]
+        panel_info = SERVICES.get(internal_key)
+        if not panel_info:
+            raise ValueError("Invalid plan key")
+        price_toman = panel_info['price_toman']
+    except Exception as e:
+        logger.error(f"Failed to unpack plan data in prompt_for_config_name: {query.data} Error: {e}")
+        # Edit inline message (use InlineKeyboardMarkup or none)
+        try:
+            await query.edit_message_text(
+                "❌ خطای داده خرید. لطفاً دوباره تلاش کنید.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="back_to_select_server")]])
+            )
+        except Exception:
+            # Fallback to sending a new message
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text="❌ خطای داده خرید. لطفاً دوباره تلاش کنید.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="back_to_select_server")]])
+            )
+        await send_main_menu(query.from_user.id, context)
         return ConversationHandler.END
 
-    # 1. چک کردن موجودی
     user_id = query.from_user.id
     balance = get_user_balance(user_id)
+    
     if balance < price_toman:
-        await query.edit_message_text(
-            f"⚠️ **موجودی ناکافی!**\n\n"
-            f"برای خرید سرویس **{SERVICES[internal_key]['label']}** نیاز به **{price_toman:,.0f} تومان** دارید، اما موجودی شما **{balance:,.0f} تومان** است.\n"
-            f"لطفاً ابتدا کیف پول خود را شارژ کنید.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به لیست پلن‌ها", callback_data="back_to_select_service")]]) 
-        )
+        # Edit inline message to show insufficient balance, include inline back button
+        try:
+            await query.edit_message_text(
+                f"⚠️ موجودی ناکافی!\n\nبرای خرید سرویس {panel_info['label']} نیاز به {price_toman:,.0f} تومان دارید، اما موجودی شما {balance:,.0f} تومان است.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به لیست پلن‌ها", callback_data=f"SELECT_SERVER_{context.user_data.get('selected_server','Server_1')}")]])
+            )
+        except Exception:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"⚠️ موجودی ناکافی!\n\nبرای خرید سرویس {panel_info['label']} نیاز به {price_toman:,.0f} تومان دارید، اما موجودی شما {balance:,.0f} تومان است.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به لیست پلن‌ها", callback_data=f"SELECT_SERVER_{context.user_data.get('selected_server','Server_1')}")]])
+            )
+        await send_main_menu(user_id, context)
         return ConversationHandler.END
 
-    # 2. ذخیره داده‌ها
+    # store purchase data
     context.user_data['purchase_data'] = {
         'internal_key': internal_key,
         'price_toman': price_toman
     }
 
-    # 3. حذف پیام قبلی و پرسش نام
+    # remove previous inline message
     try:
         await query.message.delete()
     except Exception:
         pass
 
+    # send prompt message with ReplyKeyboardMarkup (Reply keyboard must be sent as a normal message, not edit of inline)
+    # NOTE: do not set parse_mode to Markdown here to avoid entity parsing issues with backticks/examples
     await context.bot.send_message(
         user_id,
-        "لطفاً یک **نام انگلیسی دلخواه** برای کانفیگ جدید خود وارد کنید:\n"
-        "(مثال: MyFirstVPN, Maryam-Phone)",
+        "لطفاً یک نام انگلیسی دلخواه برای کانفیگ خود وارد کنید.\n(مثال: myconfig123, Ali-Vpn)\nاین نام باید بین ۳ تا ۲۰ کاراکتر باشد و فقط شامل حروف انگلیسی، اعداد، خط تیره (-) یا آندرلاین (_) باشد.",
         reply_markup=ReplyKeyboardMarkup([["❌ لغو عملیات"]], resize_keyboard=True)
     )
-
+    context.user_data['in_conversation'] = True
     return STATE_WAITING_FOR_CONFIG_NAME
 
+# ----------------------------------------------------
 
 async def receive_config_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """دریافت نام کانفیگ و درخواست تایید نهایی"""
     user_input = update.message.text.strip()
+    user_id = update.effective_user.id
     
-    if not re.match(r"^[a-zA-Z0-9_\-]+$", user_input):
+    if user_input.lower() == "❌ لغو عملیات".lower():
+        return await cancel_conversation(update, context)
+    
+    if not re.match(r'^[a-zA-Z0-9_-]{3,20}$', user_input):
         await update.message.reply_text(
-            "❌ نام وارد شده نامعتبر است. فقط حروف انگلیسی، اعداد، خط تیره (-) و آندرلاین (_) مجاز است.\n"
-            "لطفاً دوباره تلاش کنید:",
+            "⚠️ نام کانفیگ باید حداقل 3 و حداکثر 20 کاراکتر، شامل حروف انگلیسی، اعداد، خط تیره (-) یا آندرلاین (_) باشد. دوباره تلاش کنید:",
             reply_markup=ReplyKeyboardMarkup([["❌ لغو عملیات"]], resize_keyboard=True)
         )
         return STATE_WAITING_FOR_CONFIG_NAME
-        
-    # بررسی تکراری نبودن نام در پنل X-UI
-    is_duplicate = await xui_check_config_name_exists(user_input)
+
+    server_key = context.user_data.get('selected_server', 'Server_1')
+    exists = await xui_check_config_name_exists(server_key, user_input)
     
-    if is_duplicate is None:
-        await update.message.reply_text("⚠️ خطای اتصال به پنل VPN. لطفاً لحظاتی بعد دوباره امتحان کنید.", reply_markup=ReplyKeyboardMarkup([["❌ لغو عملیات"]], resize_keyboard=True)); return STATE_WAITING_FOR_CONFIG_NAME
-    elif is_duplicate is True:
-        await update.message.reply_text(f"❌ نام **`{user_input}`** قبلاً در سیستم ثبت شده است.\n\nلطفاً یک نام کاملاً جدید وارد کنید:", parse_mode="Markdown", reply_markup=ReplyKeyboardMarkup([["❌ لغو عملیات"]], resize_keyboard=True)); return STATE_WAITING_FOR_CONFIG_NAME
+    if exists is None:
+        await update.message.reply_text("❌ خطای ارتباط با پنل. لطفاً بعداً تلاش کنید یا با پشتیبانی تماس بگیرید.", reply_markup=MAIN_MENU_REPLY_MARKUP)
+        context.user_data.pop('in_conversation', None)
+        return ConversationHandler.END
+        
+    if exists:
+        await update.message.reply_text(
+            "❌ این نام کانفیگ قبلاً در سیستم وجود دارد. لطفاً یک نام انگلیسی منحصربه‌فرد انتخاب کنید:",
+            reply_markup=ReplyKeyboardMarkup([["❌ لغو عملیات"]], resize_keyboard=True)
+        )
+        return STATE_WAITING_FOR_CONFIG_NAME
 
     context.user_data['config_name'] = user_input
     purchase_data = context.user_data['purchase_data']
     internal_key = purchase_data['internal_key']
     price_toman = purchase_data['price_toman']
+    server_name = context.user_data.get('server_display_name', 'Server')
     panel_info = SERVICES[internal_key]
-
-    message_text = (
-        f"**تایید نهایی خرید**\n\n"
-        f"سرویس انتخابی: **{panel_info['label']}** ({panel_info['volume'].replace(' گیگ', 'GB')})\n"
-        f"مدت اعتبار: **{panel_info['days']} روز**\n"
-        f"تعداد کاربر: **{panel_info['users']} نفر**\n"
-        f"هزینه: **{price_toman:,.0f} تومان**\n"
-        f"**نام کانفیگ شما:** `{user_input}`\n\n"
-        "آیا اطلاعات بالا را تأیید می‌کنید؟"
-    )
-
-    keyboard = [
-        [InlineKeyboardButton("✅ بله، خرید نهایی شود", callback_data="CONFIRM_FINAL_PURCHASE")],
-        [InlineKeyboardButton("✏️ تغییر نام کانفیگ", callback_data="RE_ENTER_NAME")]
-    ]
     
-    # حذف کیبورد موقت و ارسال کیبورد شیشه‌ای
+    message_text = (
+        f"✅ تایید اطلاعات خرید\n\n"
+        f"سرور: {server_name}\n"
+        f"سرویس انتخابی: {panel_info['label']}\n"
+        f"حجم: {panel_info['volume']}\n"
+        f"اعتبار: {panel_info['days']} روز\n"
+        f"تعداد کاربر مجاز: {panel_info['users']} نفر\n"
+        f"نام کانفیگ: {user_input}\n\n"
+        f"هزینه: {price_toman:,.0f} تومان (از کیف پول کسر می‌شود)\n\n"
+        "آیا از خرید خود مطمئن هستید؟"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("✅ تایید و خرید نهایی", callback_data=f"CONFIRM_PURCHASE_{internal_key}")],
+        [InlineKeyboardButton("🔙 بازگشت و تغییر نام", callback_data="back_to_config_name_prompt")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # send confirmation inline (new message)
     await update.message.reply_text(
         message_text,
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=reply_markup
     )
+    
+    # remove the temporary reply keyboard by deleting user's input message (if possible)
+    try:
+        await context.bot.delete_message(chat_id=user_id, message_id=update.message.message_id)
+    except Exception:
+        pass
     
     return STATE_WAITING_FOR_CONFIG_NAME_CONFIRM
 
-
-# 🌟 اصلاح شد: پیام ارسال کانفیگ تمیزتر شد + ارسال نوتیف به همه ادمین‌ها
-async def finalize_purchase_with_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query; await query.answer("در حال نهایی کردن خرید...")
-    user_id = query.from_user.id
-    
-    # اطمینان از وجود داده‌ها
-    if 'purchase_data' not in context.user_data or 'config_name' not in context.user_data:
-        await context.bot.send_message(user_id, "❌ خطای جلسه خرید. لطفاً از ابتدا اقدام کنید.", reply_markup=MAIN_MENU_REPLY_MARKUP)
-        return ConversationHandler.END
-
-    config_name = context.user_data['config_name']
-    purchase_data = context.user_data['purchase_data']
-    internal_key = purchase_data['internal_key']
-    price_toman = purchase_data['price_toman']
-    
-    panel_info = SERVICES[internal_key]
-    volume_gb = int(panel_info['volume'].replace(' گیگ', ''))
-    days = panel_info['days']
-    limit_ip = panel_info['users'] # استفاده از تعداد کاربر پیشنهادی به عنوان محدودیت IP
-
-    current_balance = get_user_balance(user_id)
-    
-    if current_balance >= price_toman:
-        # 1. کسر موجودی
-        update_user_balance(user_id, -price_toman)
-        new_balance = get_user_balance(user_id)
-        
-        # 2. ایجاد کانفیگ در X-UI
-        vmess_link, client_uuid, sub_link = await xui_add_client(user_id, volume_gb, config_name, days, limit_ip)
-        
-        if vmess_link:
-            # 3. ذخیره در دیتابیس داخلی و ارسال به کاربر
-            add_user_service(user_id, config_name, sub_link, client_uuid, internal_key)
-            
-            # 🌟 اصلاح شد: ارسال لینک‌ها در یک پیام واحد و تمیزتر
-            message_text = (
-                f"✅ **خرید شما با موفقیت انجام شد!**\n\n"
-                f"**سرویس:** {panel_info['label']} ({panel_info['volume'].replace(' گیگ', 'GB')})\n"
-                f"**نام کانفیگ:** `{config_name}`\n"
-                f"**مدت اعتبار:** {days} روز\n"
-                f"**موجودی جدید شما:** **{new_balance:,.0f}** تومان\n\n"
-                f"**🔄 لینک اشتراک (توصیه شده):**\n"
-                f"`{sub_link}`\n\n"
-                f"**🔗 لینک کانفیگ VMESS (اختیاری):**\n"
-                f"`{vmess_link}`\n\n"
-                f"**⚠️ مهم:** لینک اشتراک را کپی کرده و در برنامه V2Ray خود وارد کنید."
-            )
-            
-            await context.bot.send_message(
-                user_id,
-                message_text,
-                parse_mode="Markdown",
-                reply_markup=MAIN_MENU_REPLY_MARKUP
-            )
-            
-            try: await query.message.delete()
-            except Exception: pass
-            
-            # 🌟 اطلاع به همه ادمین‌ها
-            for admin_id in ADMIN_CHAT_IDS:
-                try:
-                    await context.bot.send_message(admin_id, f"خرید موفق:\nکاربر: {user_id}\nکانفیگ: {config_name}\nپلن: {internal_key}\nحجم: {volume_gb} گیگ\nمدت: {days} روز\nتعداد کاربر: {limit_ip}")
-                except Exception as e:
-                    logger.error(f"Failed to notify admin {admin_id}: {e}")
-                
-            context.user_data.pop('purchase_data', None)
-            context.user_data.pop('config_name', None)
-            
-        else:
-            # برگشت وجه در صورت خطا
-            update_user_balance(user_id, price_toman)
-            await context.bot.send_message(
-                user_id,
-                f"❌ **خطا در ساخت کانفیگ**\n\n"
-                f"لطفاً بلافاصله با پشتیبانی تماس بگیرید و شناسه کاربری خود (`{user_id}`) را اعلام کنید. مبلغ خرید به کیف پول شما بازگشت داده شد.",
-                parse_mode="Markdown",
-                reply_markup=MAIN_MENU_REPLY_MARKUP
-            )
-        
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-            
-    else: 
-        # اگر موجودی ناکافی بود (نباید به اینجا برسیم اگر flow قبلی درست باشد، اما برای اطمینان)
-        await context.bot.send_message(user_id, f"⚠️ **موجودی کافی نیست!**\nلطفاً کیف پول خود را شارژ کنید.", reply_markup=MAIN_MENU_REPLY_MARKUP)
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-            
-    return ConversationHandler.END
-
-
-async def re_enter_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query; await query.answer()
+async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """نهایی کردن خرید، کسر وجه و ساخت کانفیگ در پنل"""
+    query = update.callback_query
+    await query.answer("در حال نهایی‌سازی خرید...")
     user_id = query.from_user.id
     
     try:
-        await query.message.delete()
-    except Exception:
-        pass
+        config_name = context.user_data['config_name']
+        server_key = context.user_data.get('selected_server', 'Server_1')
+        server_name = context.user_data.get('server_display_name', 'Server')
+        purchase_data = context.user_data['purchase_data']
         
-    await context.bot.send_message(
-        user_id,
-        "لطفاً نام دلخواه جدید خود را برای کانفیگ وارد کنید:",
-        reply_markup=ReplyKeyboardMarkup([["❌ لغو عملیات"]], resize_keyboard=True)
-    )
-    return STATE_WAITING_FOR_CONFIG_NAME
+        internal_key = purchase_data['internal_key']
+        price_toman = purchase_data['price_toman']
+        
+        panel_info = SERVICES[internal_key]
+        volume_gb = int(panel_info['volume'].split(' ')[0])
+        days = panel_info['days']
+        limit_ip = panel_info['users']
+    except Exception as e:
+        logger.error(f"Failed to retrieve purchase data in finalize_purchase: {e}")
+        try:
+            await query.edit_message_text("❌ خطای داده. لطفاً از منوی اصلی دوباره تلاش کنید.")
+        except Exception:
+            pass
+        await send_main_menu(query.from_user.id, context)
+        context.user_data.pop('in_conversation', None)
+        return ConversationHandler.END
+        
+    balance = get_user_balance(user_id)
+    if balance < price_toman:
+        try:
+            await query.edit_message_text(f"⚠️ موجودی ناکافی! موجودی شما: {balance:,.0f} تومان.")
+        except Exception:
+            pass
+        await send_main_menu(user_id, context)
+        context.user_data.pop('in_conversation', None)
+        return ConversationHandler.END
+        
+    new_balance = update_user_balance(user_id, -price_toman)
+    
+    vmess_link, client_uuid, sub_link = await xui_add_client(server_key, user_id, volume_gb, config_name, days, limit_ip)
+    
+    if vmess_link and client_uuid and sub_link:
+        add_user_service(user_id, config_name, sub_link, client_uuid, internal_key, server_key)
+        
+        volume_display = panel_info['volume'].replace(' گیگ', 'GB')
+        
+        final_message = (
+            f"✅ خرید شما با موفقیت انجام شد!\n\n"
+            f"سرویس: {panel_info['label']}\n"
+            f"نام کانفیگ: {config_name}\n"
+            f"سرور: {server_name}\n"
+            f"حجم و اعتبار: {volume_display} - {days} روز\n"
+            f"هزینه: {price_toman:,.0f} تومان\n"
+            f"موجودی جدید: {new_balance:,.0f} تومان\n\n"
+            f"لینک اشتراک:\n{sub_link}\n\n"
+            f"لینک مستقیم کانفیگ (VMess):\n{vmess_link}\n\n"
+            f"توجه: لینک اشتراک را در اپلیکیشن‌های مربوطه وارد کنید. در صورت مشکل، با پشتیبانی تماس بگیرید."
+        )
+        
+        try:
+            await query.edit_message_text(final_message)
+            await send_main_menu(user_id, context)
+        except Exception:
+            await context.bot.send_message(user_id, final_message)
+            await send_main_menu(user_id, context)
+            
+        try:
+            for admin_id in ADMIN_CHAT_IDS:
+                await context.bot.send_message(
+                    admin_id,
+                    f"خرید جدید:\nکاربر: {user_id}\nکانفیگ: {config_name}\nسرور: {server_name}\nپلن: {internal_key}"
+                )
+        except Exception as e:
+            logger.error(f"Failed to notify admin: {e}")
+            
+    else:
+        update_user_balance(user_id, price_toman)
+        try:
+            await query.edit_message_text("❌ خطا در ایجاد کانفیگ. لطفاً با پشتیبانی تماس بگیرید. مبلغ کسر شده به کیف پول شما بازگشت داده شد.")
+        except Exception:
+            pass
+        await send_main_menu(user_id, context)
+        
+    context.user_data.pop('config_name', None)
+    context.user_data.pop('selected_server', None)
+    context.user_data.pop('server_display_name', None)
+    context.user_data.pop('purchase_data', None)
+    context.user_data.pop('in_conversation', None)
 
-# --- هندلر های سرویس‌های من و تمدید ---
+    return ConversationHandler.END
 
 async def my_services(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """نمایش لیست سرویس‌های خریداری شده کاربر به همراه لینک سابسکریپشن و دکمه تمدید."""
+    """نمایش لیست کانفیگ‌های فعال کاربر"""
     user_id = update.effective_user.id
     services = get_user_services(user_id)
     
-    if not services:
+    if update.callback_query:
+        query = update.callback_query
+        try: await query.answer("در حال بارگذاری سرویس‌ها...")
+        except: pass
+        
+        if not services:
+            # edit inline message without ReplyKeyboardMarkup, then send main menu
+            try:
+                await query.edit_message_text(
+                    "📂 سرویس‌های من\n\nشما در حال حاضر هیچ سرویس فعالی ندارید.\nبرای خرید، از دکمه «🛍️ خرید سرویس (انتخاب پلن)» استفاده کنید."
+                )
+            except Exception:
+                pass
+            await send_main_menu(query.from_user.id, context)
+            return
+
+        text_lines = ["📂 سرویس‌های فعال شما:\n"]
+        keyboard = []
+        
+        for s in services:
+            name = s.get('config_name')
+            server_key = s.get('server_key', 'Unknown')
+            server_name = SERVERS_CONFIG.get(server_key, {}).get('display_name', "نامشناس")
+            text_lines.append(f"▫️ {name} — {server_name}")
+            keyboard.append([InlineKeyboardButton(f"🔍 جزئیات {name}", callback_data=f"SERVICE_DETAILS_{name}")])
+            
+        text = "\n".join(text_lines)
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_to_main_from_services")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        try:
+            await query.edit_message_text(
+                text=text,
+                reply_markup=reply_markup
+            )
+        except error.BadRequest:
+            await context.bot.send_message(user_id, text, reply_markup=reply_markup)
+            
+    else:
+        if not services:
+            await update.message.reply_text(
+                "📂 سرویس‌های من\n\nشما در حال حاضر هیچ سرویس فعالی ندارید.\nبرای خرید، از دکمه «🛍️ خرید سرویس (انتخاب پلن)» استفاده کنید.",
+                reply_markup=MAIN_MENU_REPLY_MARKUP
+            )
+            return
+
+        text_lines = ["📂 سرویس‌های فعال شما:\n"]
+        keyboard = []
+        
+        for s in services:
+            name = s.get('config_name')
+            server_key = s.get('server_key', 'Unknown')
+            server_name = SERVERS_CONFIG.get(server_key, {}).get('display_name', "نامشناس")
+            text_lines.append(f"▫️ {name} — {server_name}")
+            keyboard.append([InlineKeyboardButton(f"🔍 جزئیات {name}", callback_data=f"SERVICE_DETAILS_{name}")])
+            
+        text = "\n".join(text_lines)
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_to_main_from_services")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
         await update.message.reply_text(
-            "❌ شما هیچ سرویس فعالی خریداری نکرده‌اید.",
-            reply_markup=MAIN_MENU_REPLY_MARKUP
+            text=text,
+            reply_markup=reply_markup
         )
+
+async def show_single_service(update: Update, context: ContextTypes.DEFAULT_TYPE, config_name: str) -> None:
+    """نمایش جزئیات یک سرویس خاص (ترافیک باقی‌مانده و تاریخ انقضا)"""
+    query = update.callback_query
+    await query.answer("در حال دریافت اطلاعات سرویس...")
+    user_id = query.from_user.id
+    
+    services = get_user_services(user_id)
+    current_service = next((s for s in services if s['config_name'] == config_name), None)
+    
+    if not current_service:
+        try:
+            await query.edit_message_text("❌ سرویس مورد نظر پیدا نشد.")
+        except Exception:
+            pass
+        await send_main_menu(query.from_user.id, context)
         return
         
-    for service in services:
-        config_name = service['config_name']
-        sub_link = service['sub_link']
+    current_server_key = current_service.get('server_key')
+    server_name = SERVERS_CONFIG.get(current_server_key, {}).get('display_name', "نامشناس")
+    
+    _, client_data = await xui_get_client_info_by_name(current_server_key, config_name)
+    
+    if not client_data:
+        try:
+            await query.edit_message_text(f"❌ سرویس {config_name} پیدا نشد یا حذف شده است. لطفاً با پشتیبانی تماس بگیرید.")
+        except Exception:
+            pass
+        await send_main_menu(query.from_user.id, context)
+        return
         
-        # 1. گرفتن اطلاعات زمان و حجم باقی‌مانده از پنل
-        _, client_data = await xui_get_client_info_by_name(config_name)
+    total_bytes = client_data.get('totalGB', 0)
+    used_bytes = client_data.get('up', 0) + client_data.get('down', 0)
+    remaining_bytes = total_bytes - used_bytes
+    expiry_ms = client_data.get('expiryTime', 0)
+    
+    total_display = convert_bytes_to_display(total_bytes)
+    used_display = convert_bytes_to_display(used_bytes)
+    remaining_display = convert_bytes_to_display(remaining_bytes)
+    
+    expiry_date_str = "نامحدود"
+    if expiry_ms > 0:
+        expiry_date = datetime.datetime.fromtimestamp(expiry_ms / 1000)
+        expiry_date_str = expiry_date.strftime("%Y/%m/%d - %H:%M")
         
-        if not client_data:
-            expiry_date_display = "نامشخص (خطا در پنل)"
-            remaining_traffic_display = "نامشخص (خطا در پنل)"
-            
-        else:
-            # محاسبه تاریخ انقضا و حجم باقی‌مانده
-            expiry_time_ms = client_data.get('expiryTime', 0)
-            total_bytes = client_data.get('totalGB', 0)
-            up_bytes = client_data.get('up', 0)
-            down_bytes = client_data.get('down', 0)
-            
-            # تبدیل حجم‌ها
-            remaining_bytes = max(0, total_bytes - (up_bytes + down_bytes))
-            remaining_gb = remaining_bytes / (1024**3)
-            total_gb = total_bytes / (1024**3)
-
-            remaining_traffic_display = f"{remaining_gb:,.2f} GB از {total_gb:,.0f} GB"
-
-            # تبدیل زمان انقضا
-            if expiry_time_ms == 0:
-                expiry_date_display = "نامحدود"
-            else:
-                expiry_time_seconds = expiry_time_ms / 1000
-                expiry_date = datetime.datetime.fromtimestamp(expiry_time_seconds)
-                expiry_date_display = expiry_date.strftime("%Y/%m/%d - %H:%M")
+    renewal_allowed = SERVERS_CONFIG.get(current_server_key, {}).get('tamdid', 1)
+    
+    keyboard = []
+    if renewal_allowed:
+        keyboard.append([InlineKeyboardButton("🔁 تمدید / افزایش حجم", callback_data=f"PROMPT_RENEW_{config_name}")])
         
-        message_text = (
-            f"**📂 جزئیات سرویس: `{config_name}`**\n\n"
-            f"🔗 **لینک اشتراک:** \n`{sub_link}`\n\n"
-            f"⚡️ **حجم باقی‌مانده:** **{remaining_traffic_display}**\n"
-            f"📅 **تاریخ انقضا:** **{expiry_date_display}**"
-        )
+    keyboard.append([
+        InlineKeyboardButton("📝 لینک اشتراک", callback_data=f"SHOW_SUB_LINK_{config_name}"),
+        InlineKeyboardButton("🔙 بازگشت به لیست سرویس‌ها", callback_data="back_to_services")
+    ])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    message_text = (
+        f"🔍 جزئیات سرویس: {config_name}\n\n"
+        f"سرور: {server_name}\n\n"
+        f"ترافیک کل: {total_display}\n"
+        f"مصرف شده: {used_display}\n"
+        f"باقی‌مانده: {remaining_display}\n"
+        f"تاریخ انقضا: {expiry_date_str}\n\n"
+        f"وضعیت: {'فعال' if client_data.get('enable') else 'غیرفعال'}"
+    )
+    
+    try:
+        await query.edit_message_text(message_text, reply_markup=reply_markup)
+    except error.BadRequest:
+        await query.message.reply_text(message_text, reply_markup=reply_markup)
+
+async def send_sub_link(update: Update, context: ContextTypes.DEFAULT_TYPE, config_name: str) -> None:
+    """ارسال لینک اشتراک به صورت مجزا"""
+    query = update.callback_query
+    await query.answer("لینک اشتراک ارسال شد.")
+    user_id = query.from_user.id
+    
+    services = get_user_services(user_id)
+    current_service = next((s for s in services if s['config_name'] == config_name), None)
+    
+    if not current_service:
+        await context.bot.send_message(user_id, "❌ سرویس مورد نظر پیدا نشد.")
+        return
         
-        keyboard = [
-            [InlineKeyboardButton(f"🔁 تمدید سرویس {config_name}", callback_data=f"PROMPT_RENEW_{config_name}")]
-        ]
-
-        await update.message.reply_text(
-            message_text,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
+    sub_link = current_service.get('sub_link', 'نامشخص')
+    
+    message_text = f"📝 لینک اشتراک سرویس {config_name}:\n\n{sub_link}"
+    
+    await context.bot.send_message(user_id, message_text)
+    await show_single_service(update, context, config_name)
 
 async def prompt_renew_service(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry Point برای تمدید سرویس: ذخیره نام و انتقال به مرحله انتخاب پلن."""
+    """نمایش لیست پلن‌ها برای تمدید/افزایش حجم"""
     query = update.callback_query
-    await query.answer()
+    await query.answer("در حال بارگذاری پلن‌های تمدید...")
+    user_id = query.from_user.id
     
-    config_name = query.data.split("PROMPT_RENEW_")[1]
+    config_name = query.data.split('PROMPT_RENEW_')[1]
     
-    # چک کردن وضعیت سرویس در X-UI
-    client_id_row, client_data = await xui_get_client_info_by_name(config_name) 
-
-    # ⚠️ اصلاح شرط خطا: تنها client_data را چک می‌کنیم.
-    if not client_data:
-        await context.bot.send_message(
-            query.from_user.id,
-            f"❌ سرویس **`{config_name}`** در پنل X-UI پیدا نشد. لطفاً با پشتیبانی تماس بگیرید.",
-            parse_mode="Markdown",
-            reply_markup=MAIN_MENU_REPLY_MARKUP
-        )
+    services = get_user_services(user_id)
+    current_service = next((s for s in services if s['config_name'] == config_name), None)
+    
+    if not current_service:
+        try:
+            await query.edit_message_text("❌ سرویس مورد نظر برای تمدید پیدا نشد.")
+        except Exception:
+            pass
+        await send_main_menu(user_id, context)
         return ConversationHandler.END
-
-    # ذخیره داده‌ها
-    context.user_data['renewal_target_name'] = config_name
-    # client_data شامل uuid، totalGB، expiryTime و... است.
-    context.user_data['renewal_target_client_data'] = client_data 
-    
-    # نمایش پلن‌های موجود برای تمدید
-    keyboard = []
-    for key, panel in SERVICES.items():
-        callback_data = f"RENEW_SELECT_{key}_{panel['price_toman']}"
-        volume_display = panel['volume'].replace(' گیگ', 'GB')
-        button_text = f"🔸 {panel['label']} (+{panel['days']} روز، +{volume_display}) - {panel['price_toman']:,.0f} تومان"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
+    current_server_key = current_service.get('server_key')
+    current_server_name = SERVERS_CONFIG.get(current_server_key, {}).get('display_name', "نامشناس")
+    
+    context.user_data['renewal_target_name'] = config_name
+    context.user_data['renewal_target_server_key'] = current_server_key
+    
+    keyboard = []
+    for internal_key, panel in SERVICES.items():
+        volume_display = panel['volume'].replace(' گیگ', 'GB')
+        callback_data = f"RENEW_SELECT_{internal_key}_{panel['price_toman']}"
+        button_text = f"➕ {panel['label']} (+{panel['days']} روز، +{volume_display}) - {panel['price_toman']:,.0f} تومان"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+
     keyboard.append([InlineKeyboardButton("🔙 بازگشت به سرویس‌های من", callback_data="back_to_services")])
     reply_markup = InlineKeyboardMarkup(keyboard)
-
+    
     try:
         await query.edit_message_text(
-            f"**🔁 انتخاب پلن تمدید برای سرویس `{config_name}`**\n\n"
-            f"یکی از پلن‌های زیر را انتخاب کنید. حجم و اعتبار جدید به مقادیر فعلی شما **اضافه** خواهد شد:",
-            parse_mode="Markdown",
+            f"🔁 تمدید سرویس: {config_name}\nسرور: {current_server_name}\n\nیکی از پلن‌های زیر را انتخاب کنید. حجم و اعتبار جدید به مقادیر فعلی شما اضافه خواهد شد:",
             reply_markup=reply_markup
         )
-    except error.BadRequest: # در صورتی که پیام قبلاً ویرایش شده باشد
-        await context.bot.send_message(
-            query.from_user.id,
-            f"**🔁 انتخاب پلن تمدید برای سرویس `{config_name}`**\n\n"
-            f"یکی از پلن‌های زیر را انتخاب کنید. حجم و اعتبار جدید به مقادیر فعلی شما **اضافه** خواهد شد:",
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
-
-    return STATE_WAITING_FOR_RENEWAL_CONFIRM # تغییر وضعیت به انتظار برای تایید نهایی
-
+    except error.BadRequest:
+        await context.bot.send_message(user_id, "در حال بارگذاری پلن‌ها...", reply_markup=reply_markup)
+        
+    context.user_data['in_conversation'] = True
+    return STATE_WAITING_FOR_RENEWAL_CONFIRM
 
 async def finalize_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """نهایی کردن تمدید سرویس پس از انتخاب پلن."""
+    """نهایی کردن تمدید سرویس"""
     query = update.callback_query
     await query.answer("در حال تایید و اعمال تمدید...")
     user_id = query.from_user.id
-
-    # 1. بازیابی داده‌ها
-    config_name = context.user_data.get('renewal_target_name')
     
-    if not config_name:
-        await query.edit_message_text("❌ خطای جلسه تمدید. لطفاً دوباره تلاش کنید.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="back_to_services")]])); return ConversationHandler.END
-
     try:
         data_string = query.data.split('RENEW_SELECT_')[1]
         internal_key, price_toman_str = data_string.rsplit('_', 1)
         price_toman = int(price_toman_str)
-        panel_info = SERVICES[internal_key]
-    except (IndexError, ValueError, KeyError):
-        logger.error(f"Failed to unpack RENEW_SELECT_ data: {query.data}")
-        await query.edit_message_text("❌ خطای داده تمدید. لطفاً دوباره تلاش کنید.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="back_to_services")]])); return ConversationHandler.END
-
-    # 2. چک کردن موجودی
-    balance = get_user_balance(user_id)
-    if balance < price_toman:
-        await query.edit_message_text(
-            f"⚠️ **موجودی ناکافی!**\n\n"
-            f"برای تمدید با پلن **{panel_info['label']}** نیاز به **{price_toman:,.0f} تومان** دارید، اما موجودی شما **{balance:,.0f} تومان** است.\n"
-            f"لطفاً ابتدا کیف پول خود را شارژ کنید.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به سرویس‌های من", callback_data="back_to_services")]])
-        ); 
-        # پاکسازی context
-        context.user_data.pop('renewal_target_name', None)
-        context.user_data.pop('renewal_target_client_data', None)
+        panel_info = SERVICES.get(internal_key)
+        
+        config_name = context.user_data.get('renewal_target_name')
+        server_key = context.user_data.get('renewal_target_server_key')
+        server_name = SERVERS_CONFIG.get(server_key, {}).get('display_name', "نامشناس")
+        
+        volume_add = int(panel_info['volume'].split(' ')[0])
+        days_add = panel_info['days']
+    except Exception as e:
+        logger.error(f"Failed to retrieve renewal data in finalize_renewal: {e}")
+        try:
+            await query.edit_message_text("❌ خطای داده تمدید. لطفاً دوباره تلاش کنید.")
+        except Exception:
+            pass
+        await send_main_menu(user_id, context)
+        context.user_data.pop('in_conversation', None)
         return ConversationHandler.END
 
-    # 3. محاسبه مقادیر افزایشی
-    try:
-        volume_add = int(panel_info['volume'].replace(' گیگ', ''))
-    except ValueError:
-        volume_add = 9999 # برای نامحدود
+    balance = get_user_balance(user_id)
+    if balance < price_toman:
+        try:
+            await query.edit_message_text(f"⚠️ موجودی ناکافی! موجودی شما: {balance:,.0f} تومان.")
+        except Exception:
+            pass
+        await send_main_menu(user_id, context)
+        context.user_data.pop('in_conversation', None)
+        return ConversationHandler.END
         
-    days_add = panel_info['days']
-
-    # 4. کسر موجودی
-    update_user_balance(user_id, -price_toman) 
+    new_balance = update_user_balance(user_id, -price_toman)
     
-    # 5. به‌روزرسانی سرویس در پنل (حفظ مصرف و Limit IP)
-    update_success, new_total_gb, new_expiry_days = await xui_update_client_v2(user_id, config_name, volume_add, days_add)
+    success, new_total_gb, new_expiry_days = await xui_update_client_v2(server_key, user_id, config_name, volume_add, days_add)
     
-    panel_name = f"{panel_info['label']} ({panel_info['volume'].replace(' گیگ', 'GB')})"
-    
-    if update_success:
-        new_balance = get_user_balance(user_id)
-        
-        message_text = (
-            f"✅ **تمدید سرویس موفق**\n\n"
-            f"سرویس تمدید شده: **`{config_name}`**\n"
-            f"پلن تمدید: **{panel_name}**\n"
-            f"مقادیر اضافه شده:\n"
-            f" 🔸 **{volume_add} GB حجم**\n"
-            f" 📅 **{days_add} روز اعتبار**\n"
-            f"هزینه: **{price_toman:,.0f} تومان** (از کیف پول کسر شد)\n\n"
-            f"سرویس شما اکنون دارای:\n"
-            f" ⚡️ **{new_total_gb:,.2f} GB حجم** و **حداکثر {new_expiry_days} روز اعتبار** است.\n"
-            f"موجودی جدید: **{new_balance:,.0f}** تومان"
+    if success:
+        final_message = (
+            f"✅ تمدید سرویس {config_name} با موفقیت انجام شد!\n\n"
+            f"پلن انتخابی: {panel_info['label']}\n"
+            f"افزایش حجم: +{volume_add} GB\n"
+            f"افزایش اعتبار: +{days_add} روز\n\n"
+            f"موجودی جدید: {new_balance:,.0f} تومان\n"
+            f"حجم کل (تقریبی): {new_total_gb:.2f} GB\n"
+            f"اعتبار باقی‌مانده (تقریبی): {new_expiry_days} روز"
         )
         
-        # FIX: ابتدا پیام موجود را ویرایش کرده و کیبورد شیشه‌ای را حذف می‌کنیم.
-        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=None)
-        
-        # سپس پیام جدیدی را با کیبورد اصلی (ReplyKeyboardMarkup) می‌فرستیم.
-        await context.bot.send_message(
-            user_id,
-            "شما به منوی اصلی بازگشتید.",
-            reply_markup=MAIN_MENU_REPLY_MARKUP
-        )
-        
-        # 🌟 تغییر: اطلاع به همه ادمین‌ها
+        try:
+            await query.edit_message_text(final_message)
+            await send_main_menu(user_id, context)
+        except Exception:
+            await context.bot.send_message(user_id, final_message)
+            await send_main_menu(user_id, context)
+            
         try:
             for admin_id in ADMIN_CHAT_IDS:
-                await context.bot.send_message(admin_id, f"تمدید موفق:\nکاربر: {user_id}\nکانفیگ: {config_name}\nپلن: {internal_key}\nاضافه شده: {volume_add} GB و {days_add} روز")
+                await context.bot.send_message(
+                    admin_id,
+                    f"تمدید سرویس:\nکاربر: {user_id}\nکانفیگ: {config_name}\nسرور: {server_name}\nپلن: {internal_key}\nاضافه شده: {volume_add} GB و {days_add} روز"
+                )
         except Exception as e:
             logger.error(f"Failed to notify admin: {e}")
-
+            
     else:
-        # برگشت وجه در صورت خطا
         update_user_balance(user_id, price_toman)
-        await query.edit_message_text(
-            f"❌ **خطا در به‌روزرسانی سرویس**\n\n"
-            f"لطفاً بلافاصله با پشتیبانی تماس بگیرید. مبلغ تمدید به کیف پول شما بازگشت داده شد.",
-            parse_mode="Markdown",
-            reply_markup=MAIN_MENU_REPLY_MARKUP
-        )
-
-    # پاکسازی context
+        try:
+            await query.edit_message_text("❌ خطا در به‌روزرسانی سرویس. مبلغ تمدید به کیف پول شما بازگشت داده شد.")
+        except Exception:
+            pass
+        await send_main_menu(user_id, context)
+        
     context.user_data.pop('renewal_target_name', None)
+    context.user_data.pop('renewal_target_server_key', None)
     context.user_data.pop('renewal_target_client_data', None)
-    
+    context.user_data.pop('in_conversation', None)
     return ConversationHandler.END
 
-
-# --- هندلر های Conversation برای کیف پول و پشتیبانی --- 
+# ============================================================
+# --- هندلرهای کیف پول و پشتیبانی ---
+# ============================================================
 
 async def wallet_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """شروع فرآیند شارژ کیف پول"""
+    user_id = update.effective_user.id
+    current_balance = get_user_balance(user_id)
+    
+    message_text = (
+        f"💰 شارژ کیف پول\n\n"
+        f"موجودی فعلی شما: {current_balance:,.0f} تومان\n\n"
+        "لطفاً مبلغ مورد نظر (به تومان) را جهت شارژ کیف پول وارد کنید:\n"
+        "(حداقل ۱,۰۰۰ تومان)"
+    )
+    
     await update.message.reply_text(
-        "لطفاً مبلغ مورد نظر برای شارژ کیف پول (به **تومان**) را وارد کنید:",
+        message_text,
         reply_markup=ReplyKeyboardMarkup([["❌ لغو عملیات"]], resize_keyboard=True)
     )
+    context.user_data['in_conversation'] = True
     return STATE_GET_AMOUNT
 
-async def wallet_get_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if update.message.text == "❌ لغو عملیات": return await cancel_conversation(update, context)
-    try:
-        amount_toman = int(update.message.text)
-        if amount_toman < 1000:
-            await update.message.reply_text("مبلغ وارد شده باید حداقل ۱,۰۰۰ تومان باشد."); return STATE_GET_AMOUNT
-    except ValueError:
-        await update.message.reply_text("لطفاً مبلغ را به صورت عددی وارد کنید."); return STATE_GET_AMOUNT
+async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """دریافت مبلغ و هدایت به درگاه پرداخت - منطق از فایل 1 کپی شد"""
+    user_input = update.message.text.strip()
     
+    if user_input.lower() == "❌ لغو عملیات".lower():
+        return await cancel_conversation(update, context)
+
+    try:
+        amount_toman = int(user_input.replace(',', ''))
+        if amount_toman < 1000:
+             await update.message.reply_text("مبلغ وارد شده باید حداقل ۱,۰۰۰ تومان باشد."); return STATE_GET_AMOUNT
+    except ValueError:
+        await update.message.reply_text("❌ مبلغ وارد شده نامعتبر است. لطفاً مبلغ را به تومان و به صورت عدد وارد کنید (حداقل ۱,۰۰۰ تومان).")
+        return STATE_GET_AMOUNT
+
     user_id = update.effective_user.id
     amount_rial = amount_toman * 10
-    payment_url, authority = await zarinpal_create_request(user_id, amount_rial, f"شارژ کیف پول کاربر {user_id}", context)
+    description = f"شارژ کیف پول کاربر {user_id} به مبلغ {amount_toman:,.0f} تومان"
     
-    if not payment_url:
-        await update.message.reply_text("❌ متأسفانه در اتصال به درگاه پرداخت خطایی رخ داد. لطفراً بعداً تلاش کنید.", reply_markup=MAIN_MENU_REPLY_MARKUP); return ConversationHandler.END
+    payment_url, authority = await zarinpal_create_request(user_id, amount_rial, description, context)
+
+    if payment_url and authority:
+        # دکمه لغو پرداخت (اضافه شده از منطق فایل 1)
+        keyboard = [
+            [InlineKeyboardButton("💳 پرداخت آنلاین (اتصال به زرین‌پال)", url=payment_url)],
+            [InlineKeyboardButton("❌ لغو پرداخت", callback_data=f"cancel_payment_{authority}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"✅ لینک پرداخت برای مبلغ {amount_toman:,.0f} تومان ساخته شد.\n\n روی دکمه کلیک کرده و پرداخت را کامل کنید.",
+            reply_markup=reply_markup
+        )
+        
+        # حذف دکمه‌های Reply (ارسال یک پیام کوچک برای پاکسازی UI)
+        try:
+            await context.bot.delete_message(chat_id=user_id, message_id=update.message.message_id)
+        except Exception:
+            pass
+        
+        context.user_data.pop('in_conversation', None)
+        await send_main_menu(user_id, context)
+        return ConversationHandler.END
+    else:
+        await update.message.reply_text(
+            "❌ خطای اتصال به درگاه پرداخت. لطفاً بعداً تلاش کنید یا با پشتیبانی تماس بگیرید.",
+            reply_markup=MAIN_MENU_REPLY_MARKUP
+        )
+        context.user_data.pop('in_conversation', None)
+        return ConversationHandler.END
+
+# 🌟 تابع جدید (منتقل شده از فایل 1): هندلر لغو پرداخت
+async def cancel_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer("عملیات پرداخت لغو شد.") 
     
-    # 🌟 اعمال تغییر: اضافه کردن دکمه لغو پرداخت با authority
-    keyboard = [[InlineKeyboardButton("🔗 پرداخت آنلاین (اتصال به زرین‌پال)", url=payment_url), 
-                 InlineKeyboardButton("❌ لغو پرداخت", callback_data=f"cancel_payment_{authority}")]] 
+    user_id = query.from_user.id
     
-    await update.message.reply_text(
-        f"✅ لینک پرداخت برای مبلغ **{amount_toman:,.0f} تومان** ساخته شد.\n\n روی دکمه کلیک کرده و پرداخت را کامل کنید.",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
-    )
+    try:
+        authority = query.data.split("cancel_payment_")[1]
+        remove_pending_payment(authority)
+    except IndexError:
+        logger.error("Could not extract authority from cancel_payment callback data.")
+
+    try:
+        await query.edit_message_text(
+            "❌ لغو پرداخت\n\nعملیات شارژ کیف پول لغو شد و به منوی اصلی بازگشتید.",
+            reply_markup=None
+        )
+    except error.BadRequest:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="❌ لغو پرداخت\n\nعملیات شارژ کیف پول لغو شد و به منوی اصلی بازگشتید."
+        )
+        
+    await send_main_menu(user_id, context)
+    
     return ConversationHandler.END
 
+async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """لغو مکالمه و بازگشت به منوی اصلی"""
+    user_id = update.effective_user.id
+    
+    context.user_data.pop('in_conversation', None)
+    context.user_data.pop('config_name', None)
+    context.user_data.pop('selected_server', None)
+    context.user_data.pop('server_display_name', None)
+    context.user_data.pop('purchase_data', None)
+    context.user_data.pop('renewal_target_name', None)
+    context.user_data.pop('renewal_target_server_key', None)
+    
+    if update.message and update.message.text.lower() == "❌ لغو عملیات".lower():
+        try: await context.bot.delete_message(chat_id=user_id, message_id=update.message.message_id)
+        except Exception: pass
+        
+    await send_main_menu(user_id, context)
+    
+    return ConversationHandler.END
 
 async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """شروع مکالمه پشتیبانی"""
     await update.message.reply_text(
-        "لطفاً پیام خود را برای ارسال به پشتیبانی تایپ کنید.",
+        "📞 پشتیبانی\n\nلطفاً پیام یا سوال خود را ارسال کنید. پیام شما برای ادمین‌ها فوروارد خواهد شد.\nدر صورت تمایل به لغو، از دکمه زیر استفاده کنید.",
         reply_markup=ReplyKeyboardMarkup([["❌ لغو عملیات"]], resize_keyboard=True)
     )
+    context.user_data['in_conversation'] = True
     return STATE_GET_TICKET
 
-# 🌟 تابع اصلاح شده: فوروارد کردن پیام و ذخیره mapping
 async def support_receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """فوروارد پیام تیکت به ادمین‌ها"""
     user = update.effective_user
     original_message = update.message
     
     try:
-        # ساختن دیتابیس موقت برای نگهداری شناسه پیام‌های فوروارد شده
+        admin_message_header = f"📞 پیام پشتیبانی جدید\nنام کاربر: {user.first_name} (ID: {user.id})\n"
+        
         if 'support_map' not in context.bot_data: context.bot_data['support_map'] = {}
         
         for admin_id in ADMIN_CHAT_IDS:
-            # 1. ارسال یک پیام هدر حاوی ID کاربر (برای شناسایی سریع)
-            await context.bot.send_message(
-                admin_id,
-                f"**نام کاربر:** {user.first_name} (ID: `{user.id}`)\n",
-                parse_mode="Markdown"
-            )
-            
-            # 2. فوروارد کردن پیام اصلی کاربر
+            await context.bot.send_message(admin_id, admin_message_header)
             forwarded_message = await context.bot.forward_message(
                 chat_id=admin_id,
                 from_chat_id=user.id,
                 message_id=original_message.message_id
             )
-            
-            # 3. ذخیره نقشه‌برداری: ID پیام فوروارد شده <--> ID کاربر اصلی
             context.bot_data['support_map'][forwarded_message.message_id] = user.id
             
-        await update.message.reply_text("✅", reply_markup=MAIN_MENU_REPLY_MARKUP)
-        
+        await update.message.reply_text("✅ پیام شما به پشتیبانی ارسال شد. منتظر پاسخ باشید.", reply_markup=MAIN_MENU_REPLY_MARKUP)
+    
     except Exception as e:
         logger.error(f"Failed to handle support ticket: {e}")
-        await update.message.reply_text("❌", reply_markup=MAIN_MENU_REPLY_MARKUP)
+        await update.message.reply_text("❌ خطایی در ارسال پیام شما رخ داد.", reply_markup=MAIN_MENU_REPLY_MARKUP)
         
+    context.user_data.pop('in_conversation', None)
     return ConversationHandler.END
 
-# 🌟 تابع اصلاح شده: پاسخ ادمین به تیکت از طریق mapping
 async def reply_to_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """پاسخ ادمین به تیکت"""
     if not update.message.reply_to_message:
-        await update.message.reply_text("❌ لطفاً برای پاسخ دادن، پیام خود را در پاسخ به یک تیکت ارسال کنید."); return
-
-    replied_message_id = update.message.reply_to_message.message_id
-    admin_reply = update.message.text
+        await update.message.reply_text("❌ لطفاً برای پاسخ دادن، پیام اصلی کاربر را ریپلای کنید.")
+        return
+        
+    original_message_id = update.message.reply_to_message.message_id
+    user_id = context.bot_data.get('support_map', {}).get(original_message_id)
     
-    if 'support_map' not in context.bot_data: context.bot_data['support_map'] = {}
-    
-    # 1. گرفتن ID کاربر از mapping بر اساس شناسه پیام ریپلای شده
-    user_id = context.bot_data['support_map'].get(replied_message_id)
-
     if user_id:
         try:
             await context.bot.send_message(
                 user_id,
-                f"**🧑‍💻 پاسخ پشتیبانی:**\n{admin_reply}",
-                parse_mode="Markdown"
+                f"پاسخ پشتیبانی:\n\n{update.message.text}"
             )
-            await update.message.reply_text("✅")
-            
-            # (اختیاری): حذف mapping برای تمیز ماندن دیتابیس در صورت نیاز
-            # if replied_message_id in context.bot_data['support_map']:
-            #     del context.bot_data['support_map'][replied_message_id] 
+            await update.message.reply_text("✅ پاسخ شما برای کاربر ارسال شد.")
             
         except Exception as e:
-            logger.error(f"Failed to send reply to user {user_id}: {e}")
-            await update.message.reply_text("❌")
+            logger.error(f"Failed to reply to user {user_id}: {e}")
+            await update.message.reply_text(f"❌ خطایی در ارسال پاسخ به کاربر رخ داد: {e}")
+            
     else:
-        # اگر ID کاربر در mapping پیدا نشد (احتمالاً پیام هدر بوده یا پیام قدیمی است)
-        await update.message.reply_text("❌ پیام اصلی (تیکت) در دیتابیس پشتیبانی پیدا نشد. لطفاً مطمئن شوید به پیام فوروارد شده ریپلای می‌کنید.")
+        await update.message.reply_text("❌ شناسه کاربر پیدا نشد یا پیام اصلی تیکت نیست.")
 
+async def back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بازگشت به منوی اصلی از طریق دکمه‌های شیشه‌ای"""
+    query = update.callback_query
+    await query.answer("بازگشت به منوی اصلی...")
+    
+    # edit inline message with no ReplyKeyboardMarkup, then send MAIN menu as separate message
+    try:
+        await query.edit_message_text("یک گزینه را انتخاب کنید:")
+    except Exception:
+        pass
+    await send_main_menu(query.from_user.id, context)
 
-async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """لغو مکالمه و بازگشت به منوی اصلی."""
-    await update.message.reply_text(
-        "عملیات لغو شد و به منوی اصلی بازگشتید.", 
-        reply_markup=MAIN_MENU_REPLY_MARKUP
+async def back_to_config_name_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """بازگشت به مرحله وارد کردن نام کانفیگ (در مکالمه خرید)"""
+    query = update.callback_query
+    await query.answer("بازگشت...")
+    user_id = query.from_user.id
+    
+    await context.bot.send_message(
+        user_id,
+        "لطفاً یک نام انگلیسی دلخواه برای کانفیگ خود وارد کنید.\n(مثال: myconfig123, Ali-Vpn)\nاین نام باید بین ۳ تا ۲۰ کاراکتر باشد و فقط شامل حروف انگلیسی، اعداد، خط تیره (-) یا آندرلاین (_) باشد.",
+        reply_markup=ReplyKeyboardMarkup([["❌ لغو عملیات"]], resize_keyboard=True)
     )
-    return ConversationHandler.END
+    
+    try: await query.message.delete()
+    except Exception: pass
+    
+    return STATE_WAITING_FOR_CONFIG_NAME
 
+async def back_to_select_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بازگشت به لیست سرورها از طریق دکمه شیشه‌ای"""
+    query = update.callback_query
+    await query.answer("بازگشت به لیست سرورها...")
+    user_id = query.from_user.id
+    keyboard = []
+    for server_key, server_config in SERVERS_CONFIG.items():
+        if server_config.get('active', 1):
+            button_text = server_config['display_name']
+            callback_data = f"SELECT_SERVER_{server_key}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log the error and send a message to the admin."""
-    logger.error("Exception while handling an update:", exc_info=context.error)
+    if not keyboard:
+        try:
+            await query.edit_message_text("❌ متأسفانه در حال حاضر هیچ سرور فعالی برای خرید وجود ندارد.")
+        except Exception:
+            pass
+        await send_main_menu(user_id, context)
+        return
+        
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    try:
+        await query.edit_message_text("🌍 لطفاً یک سرور را انتخاب کنید:", reply_markup=reply_markup)
+    except error.BadRequest:
+        await context.bot.send_message(user_id, text="🌍 لطفاً یک سرور را انتخاب کنید:", reply_markup=reply_markup)
+
+async def back_to_services(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بازگشت به لیست سرویس‌های من از طریق دکمه شیشه‌ای"""
+    await my_services(update, context)
+
+# ============================================================
+# --- PAYMENT: check pending payment (REPLACED) -------------
+# ============================================================
+
+async def check_pending_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Checks for a pending payment for the user and triggers verification (moved from file 1)."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    # Inform the user we're checking
+    try:
+        await query.edit_message_text("در حال بررسی پرداخت‌های در انتظار...")
+    except Exception:
+        pass
+
+    pending_payments = load_pending_payments()
+    found_payment = None
+    for authority, info in pending_payments.items():
+        if str(info['user_id']) == str(user_id):
+            found_payment = (authority, info['amount'])
+            break
+
+    if found_payment:
+        authority, expected_amount_rial = found_payment
+        # Use the message object (query.message) as the 'update' parameter like in file 1:
+        await verify_zarinpal_payment_callback(query.message, context, authority, expected_amount_rial)
+    else:
+        await context.bot.send_message(user_id, "❌ هیچ پرداخت در انتظاری برای حساب شما پیدا نشد. لطفاً دوباره امتحان کنید.", reply_markup=MAIN_MENU_REPLY_MARKUP)
+
+# ============================================================
+# --- باقی هندلر‌ها و button handler -----------------------
+# ============================================================
+
+async def check_pending_payment_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """راهنمای پیگیری پرداخت (احتیاط: نگه‌داشته شده در صورت نیاز)"""
+    query = update.callback_query
+    await query.answer("راهنمای پیگیری پرداخت...")
+    
+    message_text = (
+        "پیگیری پرداخت ناموفق\n\n"
+        "اگر وجه از حساب شما کسر شده اما موجودی کیف پول شما افزایش نیافته است، لطفاً اطلاعات زیر را به پشتیبانی ارسال کنید:\n\n"
+        "1. تاریخ و ساعت دقیق تراکنش\n"
+        "2. کد پیگیری یا شماره ارجاع تراکنش\n"
+        "3. تصویر رسید پرداخت (اختیاری)\n\n"
+        "برای ارسال پیام به پشتیبانی، روی دکمه «📞 پشتیبانی» در منوی اصلی کلیک کنید."
+    )
     
     try:
-        if isinstance(update, Update) and update.effective_chat:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="❌ متأسفانه خطایی رخ داد. لطفاً دوباره تلاش کنید یا با پشتیبانی تماس بگیرید.",
-                reply_markup=MAIN_MENU_REPLY_MARKUP
-            )
-        else:
-             logger.error("Could not send error message to user, update object is missing chat info.")
-             
-        # 🌟 تغییر: ارسال خطا به همه ادمین‌ها
-        error_message = f"**❌ خطای جدی در ربات!**\n\n`{context.error}`"
-        for admin_id in ADMIN_CHAT_IDS:
-            try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=error_message,
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Failed to send error message to admin {admin_id}: {e}")
-                 
-    except Exception as e:
-        logger.error(f"Failed to handle error and notify admin: {e}")
+        await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_to_main_from_services")]]))
+    except error.BadRequest:
+        await query.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_to_main_from_services")]]))
 
+async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """هندلر جامع برای دکمه‌های شیشه‌ای (غیر از مکالمات)"""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    
+    if data == "OPEN_MY_SERVICES" or data == "back_to_services":
+        return await my_services(update, context) 
+    
+    if data == "back_to_main_from_services":
+        return await back_to_main_menu(update, context)
+        
+    if data == "back_to_select_server":
+        return await back_to_select_server(update, context)
+        
+    if data == "check_pending_payment":
+        # Now invokes the verification flow (not the old guide)
+        return await check_pending_payment(update, context)
+        
+    if data.startswith("SERVICE_DETAILS_"):
+        config_name_or_plan_key = data.split("SERVICE_DETAILS_")[1]
+        
+        if config_name_or_plan_key.startswith("PLAN_"):
+            internal_key = config_name_or_plan_key.split("PLAN_")[1]
+            panel_info = SERVICES.get(internal_key)
+            
+            if not panel_info:
+                try:
+                    await query.edit_message_text("❌ پلن نامعتبر", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="back_to_select_server")]]))
+                except Exception:
+                    pass
+                return
+
+            volume_display = panel_info['volume'].replace(' گیگ', 'GB')
+            description = panel_info['description']
+            
+            message_text = (
+                f"جزئیات پلن: {panel_info['label']}\n\n"
+                f"حجم: {volume_display}\n"
+                f"اعتبار: {panel_info['days']} روز\n"
+                f"تعداد کاربر مجاز: {panel_info['users']} نفر\n"
+                f"توضیحات: {description}\n\n"
+                f"قیمت: {panel_info['price_toman']:,.0f} تومان"
+            )
+            
+            buy_callback_data = f"CONFIRM_PLAN_PURCHASE_{internal_key}"
+            
+            keyboard = [
+                [InlineKeyboardButton(f"✅ تایید و خرید ({panel_info['price_toman']:,.0f} تومان)", callback_data=buy_callback_data)],
+                [InlineKeyboardButton("🔙 بازگشت به لیست پلن‌ها", callback_data=f"SELECT_SERVER_{context.user_data.get('selected_server', 'Server_1')}")] 
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            try:
+                await query.edit_message_text(message_text, reply_markup=reply_markup)
+            except error.BadRequest:
+                await context.bot.send_message(query.from_user.id, message_text, reply_markup=reply_markup)
+            return
+            
+        else:
+            return await show_single_service(update, context, config_name_or_plan_key)
+
+    if data.startswith("SHOW_SUB_LINK_"):
+        config_name = data.split("SHOW_SUB_LINK_")[1]
+        return await send_sub_link(update, context, config_name)
 
 def main() -> None:
-    """Start the bot."""
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    
-    # Conversation Handlers
+    """شروع به کار ربات"""
+    application = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
+
     wallet_conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r"^💰 شارژ کیف پول$"), wallet_start)],
         states={
-            STATE_GET_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, wallet_get_amount)],
+            STATE_GET_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, wallet_receive_amount)]
         },
-        fallbacks=[CommandHandler("cancel", cancel_conversation), MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation), MessageHandler(filters.TEXT & ~filters.COMMAND, cancel_conversation)],
+        fallbacks=[CommandHandler("cancel", cancel_conversation), MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation)],
     )
 
-    # 🌟 اصلاح شد: جلوگیری از ارسال "❌ لغو عملیات" به ادمین به عنوان تیکت
     support_conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r"^📞 پشتیبانی$"), support_start)],
         states={
-            # ⬅️ تغییر اعمال شده: اضافه کردن ~filters.Regex(r"^❌ لغو عملیات$")
-            STATE_GET_TICKET: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^❌ لغو عملیات$"), support_receive_message)],
+            STATE_GET_TICKET: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, support_receive_message)]
         },
-        fallbacks=[CommandHandler("cancel", cancel_conversation), MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation), MessageHandler(filters.TEXT & ~filters.COMMAND, cancel_conversation)],
+        fallbacks=[CommandHandler("cancel", cancel_conversation), MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation)],
     )
 
-    config_name_conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(prompt_for_config_name, pattern="^START_BUY_CONV_")],
+    purchase_conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex(r"^🛍️ خرید سرویس \(انتخاب پلن\)$"), select_server_for_purchase)],
         states={
-            STATE_WAITING_FOR_CONFIG_NAME: [MessageHandler(filters.TEXT & ~filters.Regex(r"^❌ لغو عملیات$"), receive_config_name)],
-            STATE_WAITING_FOR_CONFIG_NAME_CONFIRM: [
-                CallbackQueryHandler(finalize_purchase_with_name, pattern="^CONFIRM_FINAL_PURCHASE$"),
-                CallbackQueryHandler(re_enter_name, pattern="^RE_ENTER_NAME$")
-            ]
+            STATE_SELECT_SERVER: [
+                CallbackQueryHandler(select_service_plan, pattern="^SELECT_SERVER_"),
+                MessageHandler(filters.Regex(r"^🛍️ خرید سرویس \(انتخاب پلن\)$"), select_server_for_purchase),
+            ],
         },
-        fallbacks=[CommandHandler("cancel", cancel_conversation), MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation), MessageHandler(filters.TEXT & ~filters.COMMAND, cancel_conversation)],
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversation), 
+            MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation),
+        ],
+    )
+
+    # IMPORTANT FIX: do NOT include SERVICE_DETAILS_PLAN_ in entry_points here.
+    config_name_conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(prompt_for_config_name, pattern="^CONFIRM_PURCHASE_|^CONFIRM_PLAN_PURCHASE_")], 
+        states={
+            STATE_WAITING_FOR_CONFIG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_config_name), CallbackQueryHandler(cancel_conversation, pattern="^cancel_conv_select_server")],
+            STATE_WAITING_FOR_CONFIG_NAME_CONFIRM: [CallbackQueryHandler(finalize_purchase, pattern="^CONFIRM_PURCHASE_|^CONFIRM_PLAN_PURCHASE_"), CallbackQueryHandler(back_to_config_name_prompt, pattern="^back_to_config_name_prompt")]
+        },
+        fallbacks=[CommandHandler("cancel", cancel_conversation), MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation)],
     )
     
     renewal_conv_handler = ConversationHandler(
@@ -1468,44 +1833,39 @@ def main() -> None:
         states={
             STATE_WAITING_FOR_RENEWAL_CONFIRM: [CallbackQueryHandler(finalize_renewal, pattern="^RENEW_SELECT_")]
         },
-        # اگر کاربر در این مرحله از طریق دکمه back_to_services خارج شود، با هندلر button_callback_handler مدیریت می‌شود.
-        fallbacks=[CommandHandler("cancel", cancel_conversation), MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation), MessageHandler(filters.TEXT & ~filters.COMMAND, cancel_conversation)],
+        fallbacks=[CommandHandler("cancel", cancel_conversation), MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation)],
     )
 
-    # Error Handler
     application.add_error_handler(error_handler)
-
-    # Command Handler
     application.add_handler(CommandHandler("start", start))
-
-    # Conversation Handlers (for state-based flows)
+    
     application.add_handler(wallet_conv_handler)
     application.add_handler(support_conv_handler)
-    application.add_handler(config_name_conv_handler)
-    application.add_handler(renewal_conv_handler) 
     
-    # هندلر دکمه لغو پرداخت (جدید)
+    application.add_handler(purchase_conv_handler) 
+    
+    application.add_handler(config_name_conv_handler) 
+    application.add_handler(renewal_conv_handler)
+    
+    # 🌟 هندلر دکمه لغو پرداخت (از فایل 1 اضافه شد)
     application.add_handler(CallbackQueryHandler(cancel_payment_callback, pattern="^cancel_payment_"))
     
-    # هندلر دکمه‌های منوی اصلی
-    application.add_handler(MessageHandler(filters.Regex(r"^🛍️ خرید سرویس \(انتخاب پلن\)$"), select_service))
+    application.add_handler(CallbackQueryHandler(back_to_select_server, pattern="^back_to_select_server$"))
+    
+    application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^SERVICE_DETAILS_|SHOW_SUB_LINK_|back_to_main_from_services|check_pending_payment|back_to_services|OPEN_MY_SERVICES"))
+    
     application.add_handler(MessageHandler(filters.Regex(r"^👤 حساب من$"), my_account))
-    application.add_handler(MessageHandler(filters.Regex(r"^📂 سرویس‌های من$"), my_services)) 
+    application.add_handler(MessageHandler(filters.Regex(r"^📂 سرویس‌های من$"), my_services))
     
-    # هندلر جامع دکمه‌های شیشه‌ای (فقط شامل مواردی که با ConversationHandler مدیریت نمی‌شوند)
-    application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^DETAILS_|back_to_select_service|check_pending_payment|back_to_services"))
-    
-    # هندلر پاسخ ادمین به تیکت
     application.add_handler(
         MessageHandler(
             filters.Chat(chat_id=ADMIN_CHAT_IDS) & filters.REPLY & filters.TEXT,
-            reply_to_ticket,
+            reply_to_ticket
         )
     )
 
-    logger.info("Starting bot polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("Bot started and polling...")
+    application.run_polling(poll_interval=1.0)
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
