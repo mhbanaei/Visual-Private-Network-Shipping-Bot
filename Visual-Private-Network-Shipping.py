@@ -86,9 +86,9 @@ PENDING_PAYMENTS_FILE = 'pending_payments.json'
 USERS_FILE = 'users.json'
 
 # --- تنظیمات زرین‌پال ---
-ZARINPAL_WEBSERVICE = 'https://api.zarinpal.com/pg/v4/payment/request.json'
-ZARINPAL_VERIFY_WEBSERVICE = 'https://api.zarinpal.com/pg/v4/payment/verify.json'
-ZARINPAL_STARTPAY = 'https://www.zarinpal.com/pg/StartPay/'
+ZARINPAL_WEBSERVICE = 'https://sandbox.zarinpal.com/pg/v4/payment/request.json'
+ZARINPAL_VERIFY_WEBSERVICE = 'https://sandbox.zarinpal.com/pg/v4/payment/verify.json'
+ZARINPAL_STARTPAY = 'https://sandbox.zarinpal.com/pg/StartPay/'
 
 # --- لیست قیمت نهایی (واحد: تومان) ---
 SERVICES = {
