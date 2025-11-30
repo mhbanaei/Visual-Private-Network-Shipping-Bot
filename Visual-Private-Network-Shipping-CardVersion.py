@@ -51,7 +51,7 @@ SERVERS_CONFIG = {
 # تنظیمات اولیه 
 BOT_TOKEN = "BOT_TOKEN"
 ADMIN_CHAT_IDS = [6659266132, 8287371040]
-CARD_NUMBER = "6037-XXXX-XXXX-XXXX"  # شماره کارت برای واریز
+CARD_NUMBER = "6219861830494810"  # شماره کارت برای واریز
 
 # ⚠️ تنظیمات پروتکل VMESS
 def get_protocol_settings(server_key):
@@ -221,7 +221,7 @@ def save_pending_receipts(receipts: dict):
     with open(PENDING_RECEIPTS_FILE, 'w') as f:
         json.dump(receipts, f, indent=4, ensure_ascii=False)
 
-def add_pending_receipt(user_id: int, amount_toman: int, receipt_file_id: str, message_to_admin_id: int = None):
+def add_pending_receipt(user_id: int, amount_toman: int, receipt_file_id: str) -> str:
     """افزودن رسید جدید به لیست در انتظار"""
     receipts = load_pending_receipts()
     receipt_id = str(int(time.time() * 1000))  # شناسه یکتا بر اساس زمان
@@ -230,9 +230,11 @@ def add_pending_receipt(user_id: int, amount_toman: int, receipt_file_id: str, m
         'user_id': user_id,
         'amount_toman': amount_toman,
         'receipt_file_id': receipt_file_id,
-        'message_to_admin_id': message_to_admin_id,
         'timestamp': datetime.datetime.now().isoformat(),
-        'status': 'pending'  # pending, approved, rejected
+        'status': 'pending',  # pending, approved, rejected
+        'admin_id': None,
+        'processed_at': None,
+        'admin_message_ids': []  # لیست جدید برای ذخیره تمام message_idها
     }
     
     save_pending_receipts(receipts)
@@ -1305,7 +1307,8 @@ async def wallet_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         f"💰 شارژ کیف پول (کارت به کارت)\n\n"
         f"موجودی فعلی شما: {current_balance:,.0f} تومان\n\n"
         f"لطفاً مبلغ مورد نظر را به شماره کارت زیر واریز کنید:\n"
-        f"`{CARD_NUMBER}`\n\n"
+        f"`{CARD_NUMBER}`\n"
+        f"`Mohammad Hossein Banaei`\n\n"
         f"سپس عکس رسید بانکی را در همین چت ارسال کنید."
     )
     
@@ -1365,6 +1368,9 @@ async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("❌ خطا در دریافت اطلاعات رسید. لطفاً دوباره تلاش کنید.")
         return await cancel_conversation(update, context)
     
+    # ذخیره رسید در لیست انتظار
+    receipt_id = add_pending_receipt(user_id, amount_toman, receipt_file_id)
+    
     # ارسال رسید به ادمین‌ها برای تأیید
     user = update.effective_user
     admin_message = (
@@ -1372,34 +1378,37 @@ async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TY
         f"👤 کاربر: {user.first_name} {user.last_name or ''}\n"
         f"🆔 ID: {user.id}\n"
         f"💰 مبلغ: {amount_toman:,.0f} تومان\n\n"
+        f"🆔 کد پیگیری: {receipt_id}\n\n"
         f"لطفاً رسید را بررسی و تأیید کنید:"
     )
     
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ تأیید رسید", callback_data=f"approve_receipt_{user.id}_{amount_toman}"),
-            InlineKeyboardButton("❌ رد رسید", callback_data=f"reject_receipt_{user.id}")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    receipts = load_pending_receipts()
+    admin_message_ids = []  # لیست برای ذخیره تمام message_idها
     
-    message_to_admin = None
     for admin_id in ADMIN_CHAT_IDS:
         try:
             # ارسال عکس رسید
-            await context.bot.send_photo(
+            message = await context.bot.send_photo(
                 chat_id=admin_id,
                 photo=receipt_file_id,
                 caption=admin_message,
-                reply_markup=reply_markup
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ تأیید رسید", callback_data=f"approve_receipt_{user.id}_{amount_toman}_{receipt_id}"),
+                    InlineKeyboardButton("❌ رد رسید", callback_data=f"reject_receipt_{user.id}_{receipt_id}")
+                ]])
             )
-            # ذخیره اطلاعات پیام برای ادمین
-            message_to_admin = admin_id
+            admin_message_ids.append({
+                'admin_id': admin_id,
+                'message_id': message.message_id
+            })
+                
         except Exception as e:
             logger.error(f"Failed to send receipt to admin {admin_id}: {e}")
     
-    # ذخیره رسید در لیست انتظار
-    receipt_id = add_pending_receipt(user_id, amount_toman, receipt_file_id, message_to_admin)
+    # ذخیره لیست message_idها
+    if receipt_id in receipts:
+        receipts[receipt_id]['admin_message_ids'] = admin_message_ids
+        save_pending_receipts(receipts)
     
     # اطلاع به کاربر
     await update.message.reply_text(
@@ -1418,7 +1427,7 @@ async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """هندلر تأیید رسید توسط ادمین با مدیریت خطای کاربر مسدود شده"""
+    """هندلر تأیید رسید توسط ادمین با مدیریت کلیک‌های مکرر"""
     query = update.callback_query
     await query.answer()
     
@@ -1429,45 +1438,90 @@ async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT
     data_parts = query.data.split('_')
     user_id = int(data_parts[2])
     amount_toman = int(data_parts[3])
+    receipt_id = '_'.join(data_parts[4:]) if len(data_parts) > 4 else None
+    
+    # بررسی اینکه آیا این رسید قبلاً پردازش شده است
+    receipts = load_pending_receipts()
+    if receipt_id and receipt_id in receipts:
+        if receipts[receipt_id]['status'] != 'pending':
+            await query.answer("این رسید قبلاً پردازش شده است!", show_alert=True)
+            return
     
     # افزایش موجودی کاربر
     new_balance = update_user_balance(user_id, amount_toman)
     
     # به‌روزرسانی وضعیت رسید
-    receipt_id = None
-    receipts = load_pending_receipts()
-    for rid, receipt in receipts.items():
-        if receipt['user_id'] == user_id and receipt['amount_toman'] == amount_toman and receipt['status'] == 'pending':
-            receipt_id = rid
-            break
-    
     if receipt_id:
         update_receipt_status(receipt_id, 'approved', query.from_user.id)
     
     # اطلاع به کاربر
+    user_notified = False
     try:
         await context.bot.send_message(
             chat_id=user_id,
             text=f"✅ رسید شما تأیید شد!\n\n💰 مبلغ {amount_toman:,.0f} تومان به کیف پول شما اضافه شد.\n\n💳 موجودی جدید: {new_balance:,.0f} تومان",
             reply_markup=MAIN_MENU_REPLY_MARKUP
         )
+        user_notified = True
     except error.Forbidden:
         logger.warning(f"User {user_id} blocked the bot, cannot send receipt approval notification")
-        # اطلاع به ادمین که کاربر ربات را بلاک کرده
-        await query.message.reply_text(f"⚠️ رسید تأیید شد اما کاربر {user_id} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.")
-    except Exception as e:
-        logger.error(f"Failed to notify user {user_id}: {e}")
     
-    # به‌روزرسانی پیام ادمین
+    # غیرفعال کردن دکمه‌ها در پیام اصلی
+    admin_name = query.from_user.first_name
+    updated_caption = (
+        f"✅ رسید تأیید شد\n\n"
+        f"👤 کاربر: {user_id}\n"
+        f"💰 مبلغ: {amount_toman:,.0f} تومان\n"
+        f"✅ توسط: {admin_name}\n"
+        f"🕒 زمان: {datetime.datetime.now().strftime('%Y/%m/%d - %H:%M')}\n"
+        f"📞 کاربر {'مطلع شد' if user_notified else 'ربات را مسدود کرده'}"
+    )
+    
     try:
         await query.edit_message_caption(
-            caption=f"✅ رسید تأیید شد\n\n👤 کاربر: {user_id}\n💰 مبلغ: {amount_toman:,.0f} تومان\n✅ توسط: {query.from_user.first_name}"
+            caption=updated_caption,
+            reply_markup=None  # حذف دکمه‌ها
         )
     except Exception as e:
-        logger.error(f"Failed to edit admin message: {e}")
+        logger.error(f"Failed to edit message caption: {e}")
+    
+    # ارسال اطلاع به سایر ادمین‌ها
+    notification_text = (
+        f"🔔 اطلاع‌رسانی تأیید رسید\n\n"
+        f"👤 کاربر: {user_id}\n"
+        f"💰 مبلغ: {amount_toman:,.0f} تومان\n"
+        f"✅ توسط: {admin_name}\n"
+        f"💳 موجودی جدید کاربر: {new_balance:,.0f} تومان\n"
+        f"📞 وضعیت اطلاع‌رسانی: {'✅ موفق' if user_notified else '❌ کاربر ربات را مسدود کرده'}"
+    )
+    
+    for admin_id in ADMIN_CHAT_IDS:
+        if admin_id != query.from_user.id:  # به ادمین عمل‌کننده اطلاع نده
+            try:
+                await context.bot.send_message(admin_id, notification_text)
+                
+                # همچنین پیام اصلی را برای سایر ادمین‌ها به‌روزرسانی کن
+                receipts = load_pending_receipts()
+                if receipt_id in receipts:
+                    receipt = receipts[receipt_id]
+                    admin_message_id = receipt.get('message_to_admin_id')
+                    
+                    if admin_message_id and admin_message_id != query.message.message_id:
+                        try:
+                            await context.bot.edit_message_caption(
+                                chat_id=admin_id,
+                                message_id=admin_message_id,
+                                caption=updated_caption,
+                                reply_markup=None
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to update message for admin {admin_id}: {e}")
+                            
+            except Exception as e:
+                logger.error(f"Failed to notify admin {admin_id}: {e}")
 
 async def reject_receipt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """هندلر رد رسید توسط ادمین با مدیریت خطای کاربر مسدود شده"""
+    """هندلر رد رسید توسط ادمین با نمایش اطلاعات کامل"""
     query = update.callback_query
     await query.answer()
     
@@ -1477,79 +1531,98 @@ async def reject_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
     
     data_parts = query.data.split('_')
     user_id = int(data_parts[2])
+    receipt_id = '_'.join(data_parts[3:]) if len(data_parts) > 3 else None
+    
+    # بارگذاری اطلاعات رسیدها
+    receipts = load_pending_receipts()
+    
+    # بررسی اینکه آیا این رسید قبلاً پردازش شده است
+    if receipt_id and receipt_id in receipts:
+        if receipts[receipt_id]['status'] != 'pending':
+            await query.answer("این رسید قبلاً پردازش شده است!", show_alert=True)
+            return
+        
+        # دریافت مبلغ از اطلاعات ذخیره شده رسید
+        amount_toman = receipts[receipt_id]['amount_toman']
+    else:
+        # اگر receipt_id پیدا نشد، به دنبال رسید در انتظار برای این کاربر بگرد
+        amount_toman = 0
+        for rid, receipt in receipts.items():
+            if receipt['user_id'] == user_id and receipt['status'] == 'pending':
+                receipt_id = rid
+                amount_toman = receipt['amount_toman']
+                break
     
     # به‌روزرسانی وضعیت رسید
-    receipt_id = None
-    receipts = load_pending_receipts()
-    for rid, receipt in receipts.items():
-        if receipt['user_id'] == user_id and receipt['status'] == 'pending':
-            receipt_id = rid
-            break
-    
     if receipt_id:
         update_receipt_status(receipt_id, 'rejected', query.from_user.id)
     
     # اطلاع به کاربر
+    user_notified = False
     try:
         await context.bot.send_message(
             chat_id=user_id,
             text="❌ متأسفانه رسید شما توسط پشتیبانی رد شد.\n\nلطفاً با ارسال رسید معتبر دوباره تلاش کنید یا با پشتیبانی تماس بگیرید.",
             reply_markup=MAIN_MENU_REPLY_MARKUP
         )
+        user_notified = True
     except error.Forbidden:
         logger.warning(f"User {user_id} blocked the bot, cannot send receipt rejection notification")
-        await query.message.reply_text(f"⚠️ رسید رد شد اما کاربر {user_id} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.")
-    except Exception as e:
-        logger.error(f"Failed to notify user {user_id}: {e}")
     
-    # به‌روزرسانی پیام ادمین
+    # غیرفعال کردن دکمه‌ها در پیام اصلی با اطلاعات کامل
+    admin_name = query.from_user.first_name
+    updated_caption = (
+        f"❌ رسید رد شد\n\n"
+        f"👤 کاربر: {user_id}\n"
+        f"💰 مبلغ: {amount_toman:,.0f} تومان\n"
+        f"❌ توسط: {admin_name}\n"
+        f"🕒 زمان: {datetime.datetime.now().strftime('%Y/%m/%d - %H:%M')}\n"
+        f"📞 کاربر {'مطلع شد' if user_notified else 'ربات را مسدود کرده'}"
+    )
+    
     try:
         await query.edit_message_caption(
-            caption=f"❌ رسید رد شد\n\n👤 کاربر: {user_id}\n❌ توسط: {query.from_user.first_name}"
+            caption=updated_caption,
+            reply_markup=None  # حذف دکمه‌ها
         )
     except Exception as e:
-        logger.error(f"Failed to edit admin message: {e}")
-
-async def reject_receipt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """هندلر رد رسید توسط ادمین"""
-    query = update.callback_query
-    await query.answer()
+        logger.error(f"Failed to edit message caption: {e}")
     
-    if query.from_user.id not in ADMIN_CHAT_IDS:
-        await query.message.reply_text("❌ شما دسترسی لازم برای این عمل را ندارید.")
-        return
+    # ارسال اطلاع به سایر ادمین‌ها با اطلاعات کامل
+    notification_text = (
+        f"🔔 اطلاع‌رسانی رد رسید\n\n"
+        f"👤 کاربر: {user_id}\n"
+        f"💰 مبلغ: {amount_toman:,.0f} تومان\n"
+        f"❌ توسط: {admin_name}\n"
+        f"🕒 زمان: {datetime.datetime.now().strftime('%Y/%m/%d - %H:%M')}\n"
+        f"📞 وضعیت اطلاع‌رسانی: {'✅ موفق' if user_notified else '❌ کاربر ربات را مسدود کرده'}"
+    )
     
-    data_parts = query.data.split('_')
-    user_id = int(data_parts[2])
-    
-    # به‌روزرسانی وضعیت رسید
-    receipt_id = None
-    receipts = load_pending_receipts()
-    for rid, receipt in receipts.items():
-        if receipt['user_id'] == user_id and receipt['status'] == 'pending':
-            receipt_id = rid
-            break
-    
-    if receipt_id:
-        update_receipt_status(receipt_id, 'rejected', query.from_user.id)
-    
-    # اطلاع به کاربر
-    try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="❌ متأسفانه رسید شما توسط پشتیبانی رد شد.\n\nلطفاً با ارسال رسید معتبر دوباره تلاش کنید یا با پشتیبانی تماس بگیرید.",
-            reply_markup=MAIN_MENU_REPLY_MARKUP
-        )
-    except Exception as e:
-        logger.error(f"Failed to notify user {user_id}: {e}")
-    
-    # به‌روزرسانی پیام ادمین
-    try:
-        await query.edit_message_caption(
-            caption=f"❌ رسید رد شد\n\n👤 کاربر: {user_id}\n❌ توسط: {query.from_user.first_name}"
-        )
-    except Exception as e:
-        logger.error(f"Failed to edit admin message: {e}")
+    for admin_id in ADMIN_CHAT_IDS:
+        if admin_id != query.from_user.id:  # به ادمین عمل‌کننده اطلاع نده
+            try:
+                await context.bot.send_message(admin_id, notification_text)
+                
+                # همچنین پیام اصلی را برای سایر ادمین‌ها به‌روزرسانی کن
+                receipts_updated = load_pending_receipts()
+                if receipt_id in receipts_updated:
+                    receipt = receipts_updated[receipt_id]
+                    admin_message_ids = receipt.get('admin_message_ids', [])
+                    
+                    for msg_info in admin_message_ids:
+                        if msg_info['admin_id'] == admin_id and msg_info['message_id'] != query.message.message_id:
+                            try:
+                                await context.bot.edit_message_caption(
+                                    chat_id=admin_id,
+                                    message_id=msg_info['message_id'],
+                                    caption=updated_caption,
+                                    reply_markup=None
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to update message for admin {admin_id}: {e}")
+                            
+            except Exception as e:
+                logger.error(f"Failed to notify admin {admin_id}: {e}")
 
 # ============================================================
 # --- دستور ادمین برای افزایش موجودی کاربر ---
