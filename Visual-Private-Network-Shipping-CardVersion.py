@@ -6,6 +6,7 @@
 # 4. Added FREE_TRIAL service (1GB, 1 day, 1 user) with one-time purchase limit
 # 5. Added check to prevent renewal of free trial service
 # 6. Moved free trial to services list (not separate button in main menu)
+# 7. Hossein Banaei 
 
 import logging
 import requests
