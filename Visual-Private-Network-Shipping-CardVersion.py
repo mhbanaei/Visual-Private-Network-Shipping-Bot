@@ -3,6 +3,9 @@
 # 1. Removed Zarinpal gateway completely
 # 2. Added card-to-card payment with receipt upload
 # 3. Added admin command /add for manual balance update
+# 4. Added FREE_TRIAL service (1GB, 1 day, 1 user) with one-time purchase limit
+# 5. Added check to prevent renewal of free trial service
+# 6. Moved free trial to services list (not separate button in main menu)
 
 import logging
 import requests
@@ -87,25 +90,28 @@ STATE_WAITING_FOR_RECEIPT = 9  # وضعیت جدید برای دریافت عک�
 PENDING_PAYMENTS_FILE = 'pending_payments.json'
 USERS_FILE = 'users.json'
 PENDING_RECEIPTS_FILE = 'pending_receipts.json'  # فایل جدید برای رسیدهای در انتظار تأیید
+FREE_TRIAL_USERS_FILE = 'free_trial_users.json'  # فایل جدید برای رصد کاربران تست رایگان
 
 # --- لیست قیمت نهایی (واحد: تومان) ---
 SERVICES = {
-    "Nano_Lite": {"label": "نانو لایت", "users": 2, "volume": "10 گیگ", "days": 10, "price_toman": 35000, "description": "برای استفاده سبک مثل پیام‌رسان و مرور روزانه."},
-    "Pint_Lite": {"label": "پینت لایت", "users": 2, "volume": "30 گیگ", "days": 20, "price_toman": 69000, "description": "مناسب کاربران نیمه‌فعال و شبکه‌های اجتماعی."},
-    "Standard": {"label": "استاندارد", "users": 2, "volume": "50 گیگ", "days": 30, "price_toman": 89000, "description": "تعادل عالی بین سرعت."},
-    "Smart_Online": {"label": "اسمارت آنلاین", "users": 2, "volume": "100 گیگ", "days": 30, "price_toman": 129000, "description": "محبوب میان کاربران حرفه‌ای ایرانی."},
-    "Pro_Plus": {"label": "پرو پلاس +", "users": 3, "volume": "200 گیگ", "days": 30, "price_toman": 179000, "description": "انتخاب همیشگی برای فریلنسرها و گیمرها."},
-    "Family": {"label": "خانواده", "users": 3, "volume": "500 گیگ", "days": 30, "price_toman": 379000, "description": "طراحی شده برای خانواده یا گروه کاری کوچک."},
-    "Titanium": {"label": "تیتانیوم", "users": 4, "volume": "700 گیگ", "days": 30, "price_toman": 419000, "description": "تعادل هوشمند بین ترافیک زیاد و کنترل کیفیت."},
-    "VIP": {"label": "VIP", "users": 5, "volume": "900 گیگ", "days": 30, "price_toman": 459000, "description": "مخصوص یوزرهای دائم آنلاین و پرمصرف."},
-    "VIP_Plus": {"label": "VIP_Plus", "users": 5, "volume": "1000 گیگ", "days": 30, "price_toman": 599000, "description": "سطح بالای امنیت، اختصاصی مدیران و حرفه‌ای‌ها."},
-    "Organizational": {"label": "سازمانی", "users": 5, "volume": "2500 گیگ", "days": 30, "price_toman": 749000, "description": "انتخاب اقتصادی برای تیم‌ها و سازمان‌ها."},
-    "Unlimited": {"label": "نامحدود + هدیه", "users": 2, "volume": "9999 گیگ", "days": 30, "price_toman": 899000, "description": "IP ثابت آلمان، سرعت اختصاصی."},
+    "FREE_TRIAL": {"label": "🆓 سرویس تست رایگان", "users": 1, "volume": "1 گیگ", "days": 1, "price_toman": 0, 
+                   "description": "سرویس تست رایگان - فقط یک بار برای هر کاربر", "renewable": False},
+    "Nano_Lite": {"label": "نانو لایت", "users": 2, "volume": "10 گیگ", "days": 10, "price_toman": 35000, "description": "برای استفاده سبک مثل پیام‌رسان و مرور روزانه.", "renewable": True},
+    "Pint_Lite": {"label": "پینت لایت", "users": 2, "volume": "30 گیگ", "days": 20, "price_toman": 69000, "description": "مناسب کاربران نیمه‌فعال و شبکه‌های اجتماعی.", "renewable": True},
+    "Standard": {"label": "استاندارد", "users": 2, "volume": "50 گیگ", "days": 30, "price_toman": 89000, "description": "تعادل عالی بین سرعت.", "renewable": True},
+    "Smart_Online": {"label": "اسمارت آنلاین", "users": 2, "volume": "100 گیگ", "days": 30, "price_toman": 129000, "description": "محبوب میان کاربران حرفه‌ای ایرانی.", "renewable": True},
+    "Pro_Plus": {"label": "پرو پلاس +", "users": 3, "volume": "200 گیگ", "days": 30, "price_toman": 179000, "description": "انتخاب همیشگی برای فریلنسرها و گیمرها.", "renewable": True},
+    "Family": {"label": "خانواده", "users": 3, "volume": "500 گیگ", "days": 30, "price_toman": 379000, "description": "طراحی شده برای خانواده یا گروه کاری کوچک.", "renewable": True},
+    "Titanium": {"label": "تیتانیوم", "users": 4, "volume": "700 گیگ", "days": 30, "price_toman": 419000, "description": "تعادل هوشمند بین ترافیک زیاد و کنترل کیفیت.", "renewable": True},
+    "VIP": {"label": "VIP", "users": 5, "volume": "900 گیگ", "days": 30, "price_toman": 459000, "description": "مخصوص یوزرهای دائم آنلاین و پرمصرف.", "renewable": True},
+    "VIP_Plus": {"label": "VIP_Plus", "users": 5, "volume": "1000 گیگ", "days": 30, "price_toman": 599000, "description": "سطح بالای امنیت، اختصاصی مدیران و حرفه‌ای‌ها.", "renewable": True},
+    "Organizational": {"label": "سازمانی", "users": 5, "volume": "2500 گیگ", "days": 30, "price_toman": 749000, "description": "انتخاب اقتصادی برای تیم‌ها و سازمان‌ها.", "renewable": True},
+    "Unlimited": {"label": "نامحدود + هدیه", "users": 2, "volume": "9999 گیگ", "days": 30, "price_toman": 899000, "description": "IP ثابت آلمان، سرعت اختصاصی.", "renewable": True},
 }
 
 # --- دکمه‌های منوی اصلی ---
 MAIN_MENU_KEYBOARD = [
-    ["🛍️ خرید سرویس (انتخاب پلن)"],
+    ["🛍️ خرید سرویس"],
     ["📂 سرویس‌های من", "👤 حساب من"],
     ["💰 شارژ کیف پول", "📞 پشتیبانی"],
 ]
@@ -203,6 +209,39 @@ def update_user_service_key(user_id: int, config_name: str, new_key: str, new_va
     return False
 
 # ============================================================
+# --- توابع مدیریت کاربران تست رایگان ---
+# ============================================================
+
+def load_free_trial_users() -> dict:
+    """بارگذاری لیست کاربرانی که از تست رایگان استفاده کرده‌اند"""
+    if not os.path.exists(FREE_TRIAL_USERS_FILE):
+        return {}
+    try:
+        with open(FREE_TRIAL_USERS_FILE, 'r') as f:
+            return json.load(f)
+    except (IOError, json.JSONDecodeError):
+        return {}
+
+def save_free_trial_users(users: dict):
+    """ذخیره لیست کاربران تست رایگان"""
+    with open(FREE_TRIAL_USERS_FILE, 'w') as f:
+        json.dump(users, f, indent=4, ensure_ascii=False)
+
+def has_user_used_free_trial(user_id: int) -> bool:
+    """بررسی اینکه آیا کاربر قبلاً از تست رایگان استفاده کرده است"""
+    users = load_free_trial_users()
+    return str(user_id) in users
+
+def mark_free_trial_used(user_id: int):
+    """علامت‌گذاری کاربر به عنوان استفاده‌کننده از تست رایگان"""
+    users = load_free_trial_users()
+    users[str(user_id)] = {
+        'used_date': datetime.datetime.now().isoformat(),
+        'user_id': user_id
+    }
+    save_free_trial_users(users)
+
+# ============================================================
 # --- توابع مدیریت رسیدهای در انتظار (سیستم جدید کارت به کارت) ---
 # ============================================================
 
@@ -221,7 +260,7 @@ def save_pending_receipts(receipts: dict):
     with open(PENDING_RECEIPTS_FILE, 'w') as f:
         json.dump(receipts, f, indent=4, ensure_ascii=False)
 
-def add_pending_receipt(user_id: int, amount_toman: int, receipt_file_id: str) -> str:
+def add_pending_receipt(user_id: int, amount_toman: int, receipt_file_id: str, message_to_admin_id: int = None):
     """افزودن رسید جدید به لیست در انتظار"""
     receipts = load_pending_receipts()
     receipt_id = str(int(time.time() * 1000))  # شناسه یکتا بر اساس زمان
@@ -230,11 +269,9 @@ def add_pending_receipt(user_id: int, amount_toman: int, receipt_file_id: str) -
         'user_id': user_id,
         'amount_toman': amount_toman,
         'receipt_file_id': receipt_file_id,
+        'message_to_admin_id': message_to_admin_id,
         'timestamp': datetime.datetime.now().isoformat(),
-        'status': 'pending',  # pending, approved, rejected
-        'admin_id': None,
-        'processed_at': None,
-        'admin_message_ids': []  # لیست جدید برای ذخیره تمام message_idها
+        'status': 'pending'  # pending, approved, rejected
     }
     
     save_pending_receipts(receipts)
@@ -735,7 +772,8 @@ async def select_service_plan(update: Update, context: ContextTypes.DEFAULT_TYPE
     keyboard = []
     for internal_key, info in SERVICES.items():
         volume_display = info['volume'].replace(' گیگ', 'GB')
-        button_text = f"🔹 {info['label']} ({volume_display}, {info['days']} روز) - {info['price_toman']:,.0f} تومان"
+        price_text = f"{info['price_toman']:,.0f} تومان" if info['price_toman'] > 0 else "رایگان"
+        button_text = f"🔹 {info['label']} ({volume_display}, {info['days']} روز) - {price_text}"
         callback_data = f"SERVICE_DETAILS_PLAN_{internal_key}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
@@ -801,7 +839,30 @@ async def prompt_for_config_name(update: Update, context: ContextTypes.DEFAULT_T
     user_id = query.from_user.id
     balance = get_user_balance(user_id)
     
-    if balance < price_toman:
+    # بررسی خاص برای سرویس تست رایگان
+    if internal_key == "FREE_TRIAL":
+        if has_user_used_free_trial(user_id):
+            # ویرایش پیام به جای ارسال پیام جدید
+            try:
+                await query.edit_message_text(
+                    "❌ شما قبلاً از سرویس تست رایگان استفاده کرده‌اید.\n\n"
+                    "هر کاربر تنها یک بار می‌تواند از سرویس تست رایگان استفاده کند.\n"
+                    "لطفاً یکی از پلن‌های پولی را انتخاب کنید.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به لیست پلن‌ها", callback_data=f"SELECT_SERVER_{context.user_data.get('selected_server','Server_1')}")]])
+                )
+            except Exception:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="❌ شما قبلاً از سرویس تست رایگان استفاده کرده‌اید.\n\n"
+                    "هر کاربر تنها یک بار می‌تواند از سرویس تست رایگان استفاده کند.\n"
+                    "لطفاً یکی از پلن‌های پولی را انتخاب کنید.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به لیست پلن‌ها", callback_data=f"SELECT_SERVER_{context.user_data.get('selected_server','Server_1')}")]])
+                )
+            await send_main_menu(user_id, context)
+            return ConversationHandler.END
+    
+    # برای سرویس‌های پولی، بررسی موجودی
+    if price_toman > 0 and balance < price_toman:
         # Edit inline message to show insufficient balance, include inline back button
         try:
             await query.edit_message_text(
@@ -878,6 +939,8 @@ async def receive_config_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     server_name = context.user_data.get('server_display_name', 'Server')
     panel_info = SERVICES[internal_key]
     
+    price_text = f"{price_toman:,.0f} تومان" if price_toman > 0 else "رایگان"
+    
     message_text = (
         f"✅ تایید اطلاعات خرید\n\n"
         f"سرور: {server_name}\n"
@@ -886,9 +949,13 @@ async def receive_config_name(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"اعتبار: {panel_info['days']} روز\n"
         f"تعداد کاربر مجاز: {panel_info['users']} نفر\n"
         f"نام کانفیگ: {user_input}\n\n"
-        f"هزینه: {price_toman:,.0f} تومان (از کیف پول کسر می‌شود)\n\n"
+        f"هزینه: {price_text}\n\n"
         "آیا از خرید خود مطمئن هستید؟"
     )
+    
+    # برای سرویس تست رایگان، پیام اضافی نمایش دهید
+    if internal_key == "FREE_TRIAL":
+        message_text += "\n\n⚠️ توجه: این سرویس فقط یک بار برای هر کاربر قابل استفاده است."
     
     keyboard = [
         [InlineKeyboardButton("✅ تایید و خرید نهایی", callback_data=f"CONFIRM_PURCHASE_{internal_key}")],
@@ -938,25 +1005,50 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await send_main_menu(query.from_user.id, context)
         context.user_data.pop('in_conversation', None)
         return ConversationHandler.END
-        
-    balance = get_user_balance(user_id)
-    if balance < price_toman:
-        try:
-            await query.edit_message_text(f"⚠️ موجودی ناکافی! موجودی شما: {balance:,.0f} تومان.")
-        except Exception:
-            pass
-        await send_main_menu(user_id, context)
-        context.user_data.pop('in_conversation', None)
-        return ConversationHandler.END
-        
-    new_balance = update_user_balance(user_id, -price_toman)
+    
+    # برای سرویس تست رایگان، بررسی مجدد
+    if internal_key == "FREE_TRIAL":
+        if has_user_used_free_trial(user_id):
+            try:
+                await query.edit_message_text(
+                    "❌ شما قبلاً از سرویس تست رایگان استفاده کرده‌اید.\n\n"
+                    "هر کاربر تنها یک بار می‌تواند از سرویس تست رایگان استفاده کند."
+                )
+            except Exception:
+                pass
+            await send_main_menu(user_id, context)
+            context.user_data.pop('in_conversation', None)
+            return ConversationHandler.END
+    
+    # بررسی موجودی فقط برای سرویس‌های پولی
+    if price_toman > 0:
+        balance = get_user_balance(user_id)
+        if balance < price_toman:
+            try:
+                await query.edit_message_text(f"⚠️ موجودی ناکافی! موجودی شما: {balance:,.0f} تومان.")
+            except Exception:
+                pass
+            await send_main_menu(user_id, context)
+            context.user_data.pop('in_conversation', None)
+            return ConversationHandler.END
+    
+    # کسر وجه فقط برای سرویس‌های پولی
+    if price_toman > 0:
+        new_balance = update_user_balance(user_id, -price_toman)
+    else:
+        new_balance = get_user_balance(user_id)
     
     vmess_link, client_uuid, sub_link = await xui_add_client(server_key, user_id, volume_gb, config_name, days, limit_ip)
     
     if vmess_link and client_uuid and sub_link:
         add_user_service(user_id, config_name, sub_link, client_uuid, internal_key, server_key)
         
+        # برای سرویس تست رایگان، کاربر را علامت‌گذاری کن
+        if internal_key == "FREE_TRIAL":
+            mark_free_trial_used(user_id)
+        
         volume_display = panel_info['volume'].replace(' گیگ', 'GB')
+        price_text = f"{price_toman:,.0f} تومان" if price_toman > 0 else "رایگان"
         
         final_message = (
             f"✅ خرید شما با موفقیت انجام شد!\n\n"
@@ -964,12 +1056,23 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"نام کانفیگ: {config_name}\n"
             f"سرور: {server_name}\n"
             f"حجم و اعتبار: {volume_display} - {days} روز\n"
-            f"هزینه: {price_toman:,.0f} تومان\n"
-            f"موجودی جدید: {new_balance:,.0f} تومان\n\n"
-            f"لینک اشتراک:\n{sub_link}\n\n"
-            f"لینک مستقیم کانفیگ (VMess):\n{vmess_link}\n\n"
+            f"هزینه: {price_text}\n"
+        )
+        
+        if price_toman > 0:
+            final_message += f"موجودی جدید: {new_balance:,.0f} تومان\n\n"
+        else:
+            final_message += f"\n"
+        
+        final_message += (
+            f"🔗 لینک اشتراک:\n{sub_link}\n\n"
+            f"🔗 لینک مستقیم کانفیگ (VMess):\n{vmess_link}\n\n"
             f"توجه: لینک اشتراک را در اپلیکیشن‌های مربوطه وارد کنید. در صورت مشکل، با پشتیبانی تماس بگیرید."
         )
+        
+        # پیام اضافی برای سرویس تست رایگان
+        if internal_key == "FREE_TRIAL":
+            final_message += f"\n\n⚠️ توجه: این سرویس تست رایگان فقط 1 روز اعتبار دارد و قابل تمدید نیست."
         
         try:
             await query.edit_message_text(final_message)
@@ -988,9 +1091,11 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             logger.error(f"Failed to notify admin: {e}")
             
     else:
-        update_user_balance(user_id, price_toman)
+        # بازگشت وجه فقط برای سرویس‌های پولی
+        if price_toman > 0:
+            update_user_balance(user_id, price_toman)
         try:
-            await query.edit_message_text("❌ خطا در ایجاد کانفیگ. لطفاً با پشتیبانی تماس بگیرید. مبلغ کسر شده به کیف پول شما بازگشت داده شد.")
+            await query.edit_message_text("❌ خطا در ایجاد کانفیگ. لطفاً با پشتیبانی تماس بگیرید. در صورت کسر وجه، مبلغ به کیف پول شما بازگشت داده شد.")
         except Exception:
             pass
         await send_main_menu(user_id, context)
@@ -1017,7 +1122,7 @@ async def my_services(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             # edit inline message without ReplyKeyboardMarkup, then send main menu
             try:
                 await query.edit_message_text(
-                    "📂 سرویس‌های من\n\nشما در حال حاضر هیچ سرویس فعالی ندارید.\nبرای خرید، از دکمه «🛍️ خرید سرویس (انتخاب پلن)» استفاده کنید."
+                    "📂 سرویس‌های من\n\nشما در حال حاضر هیچ سرویس فعالی ندارید.\nبرای خرید، از دکمه «🛍️ خرید سرویس» استفاده کنید."
                 )
             except Exception:
                 pass
@@ -1031,7 +1136,9 @@ async def my_services(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             name = s.get('config_name')
             server_key = s.get('server_key', 'Unknown')
             server_name = SERVERS_CONFIG.get(server_key, {}).get('display_name', "نامشناس")
-            text_lines.append(f"▫️ {name} — {server_name}")
+            internal_key = s.get('internal_key', 'Unknown')
+            service_type = "🆓" if internal_key == "FREE_TRIAL" else "💰"
+            text_lines.append(f"{service_type} {name} — {server_name}")
             keyboard.append([InlineKeyboardButton(f"🔍 جزئیات {name}", callback_data=f"SERVICE_DETAILS_{name}")])
             
         text = "\n".join(text_lines)
@@ -1049,7 +1156,7 @@ async def my_services(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     else:
         if not services:
             await update.message.reply_text(
-                "📂 سرویس‌های من\n\nشما در حال حاضر هیچ سرویس فعالی ندارید.\nبرای خرید، از دکمه «🛍️ خرید سرویس (انتخاب پلن)» استفاده کنید.",
+                "📂 سرویس‌های من\n\nشما در حال حاضر هیچ سرویس فعالی ندارید.\nبرای خرید، از دکمه «🛍️ خرید سرویس» استفاده کنید.",
                 reply_markup=MAIN_MENU_REPLY_MARKUP
             )
             return
@@ -1061,7 +1168,9 @@ async def my_services(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             name = s.get('config_name')
             server_key = s.get('server_key', 'Unknown')
             server_name = SERVERS_CONFIG.get(server_key, {}).get('display_name', "نامشناس")
-            text_lines.append(f"▫️ {name} — {server_name}")
+            internal_key = s.get('internal_key', 'Unknown')
+            service_type = "🆓" if internal_key == "FREE_TRIAL" else "💰"
+            text_lines.append(f"{service_type} {name} — {server_name}")
             keyboard.append([InlineKeyboardButton(f"🔍 جزئیات {name}", callback_data=f"SERVICE_DETAILS_{name}")])
             
         text = "\n".join(text_lines)
@@ -1092,6 +1201,7 @@ async def show_single_service(update: Update, context: ContextTypes.DEFAULT_TYPE
         
     current_server_key = current_service.get('server_key')
     server_name = SERVERS_CONFIG.get(current_server_key, {}).get('display_name', "نامشناس")
+    internal_key = current_service.get('internal_key', 'Unknown')
     
     _, client_data = await xui_get_client_info_by_name(current_server_key, config_name)
     
@@ -1117,7 +1227,15 @@ async def show_single_service(update: Update, context: ContextTypes.DEFAULT_TYPE
         expiry_date = datetime.datetime.fromtimestamp(expiry_ms / 1000)
         expiry_date_str = expiry_date.strftime("%Y/%m/%d - %H:%M")
         
-    renewal_allowed = SERVERS_CONFIG.get(current_server_key, {}).get('tamdid', 1)
+    # بررسی امکان تمدید
+    renewal_allowed = False
+    if internal_key == "FREE_TRIAL":
+        renewal_allowed = False  # سرویس تست رایگان قابل تمدید نیست
+    else:
+        server_renewal = SERVERS_CONFIG.get(current_server_key, {}).get('tamdid', 1)
+        service_info = SERVICES.get(internal_key, {})
+        service_renewable = service_info.get('renewable', True)
+        renewal_allowed = server_renewal and service_renewable
     
     keyboard = []
     if renewal_allowed:
@@ -1130,8 +1248,11 @@ async def show_single_service(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
+    service_type = "🆓 تست رایگان" if internal_key == "FREE_TRIAL" else "💰 سرویس پولی"
+    
     message_text = (
         f"🔍 جزئیات سرویس: {config_name}\n\n"
+        f"نوع: {service_type}\n"
         f"سرور: {server_name}\n\n"
         f"ترافیک کل: {total_display}\n"
         f"مصرف شده: {used_display}\n"
@@ -1139,6 +1260,9 @@ async def show_single_service(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"تاریخ انقضا: {expiry_date_str}\n\n"
         f"وضعیت: {'فعال' if client_data.get('enable') else 'غیرفعال'}"
     )
+    
+    if internal_key == "FREE_TRIAL":
+        message_text += "\n\n⚠️ توجه: این سرویس تست رایگان قابل تمدید نیست. برای ادامه استفاده، لطفاً یک سرویس پولی خریداری کنید."
     
     try:
         await query.edit_message_text(message_text, reply_markup=reply_markup)
@@ -1183,6 +1307,18 @@ async def prompt_renew_service(update: Update, context: ContextTypes.DEFAULT_TYP
             pass
         await send_main_menu(user_id, context)
         return ConversationHandler.END
+    
+    # بررسی اینکه سرویس تست رایگان نباشد
+    if current_service.get('internal_key') == "FREE_TRIAL":
+        try:
+            await query.edit_message_text(
+                "❌ سرویس تست رایگان قابل تمدید نیست.\n\n"
+                "برای ادامه استفاده، لطفاً یک سرویس پولی از منوی اصلی خریداری کنید."
+            )
+        except Exception:
+            pass
+        await send_main_menu(user_id, context)
+        return ConversationHandler.END
         
     current_server_key = current_service.get('server_key')
     current_server_name = SERVERS_CONFIG.get(current_server_key, {}).get('display_name', "نامشناس")
@@ -1192,6 +1328,10 @@ async def prompt_renew_service(update: Update, context: ContextTypes.DEFAULT_TYP
     
     keyboard = []
     for internal_key, panel in SERVICES.items():
+        # حذف سرویس تست رایگان از لیست تمدید
+        if internal_key == "FREE_TRIAL":
+            continue
+            
         volume_display = panel['volume'].replace(' گیگ', 'GB')
         callback_data = f"RENEW_SELECT_{internal_key}_{panel['price_toman']}"
         button_text = f"➕ {panel['label']} (+{panel['days']} روز، +{volume_display}) - {panel['price_toman']:,.0f} تومان"
@@ -1368,9 +1508,6 @@ async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("❌ خطا در دریافت اطلاعات رسید. لطفاً دوباره تلاش کنید.")
         return await cancel_conversation(update, context)
     
-    # ذخیره رسید در لیست انتظار
-    receipt_id = add_pending_receipt(user_id, amount_toman, receipt_file_id)
-    
     # ارسال رسید به ادمین‌ها برای تأیید
     user = update.effective_user
     admin_message = (
@@ -1378,37 +1515,34 @@ async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TY
         f"👤 کاربر: {user.first_name} {user.last_name or ''}\n"
         f"🆔 ID: {user.id}\n"
         f"💰 مبلغ: {amount_toman:,.0f} تومان\n\n"
-        f"🆔 کد پیگیری: {receipt_id}\n\n"
         f"لطفاً رسید را بررسی و تأیید کنید:"
     )
     
-    receipts = load_pending_receipts()
-    admin_message_ids = []  # لیست برای ذخیره تمام message_idها
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ تأیید رسید", callback_data=f"approve_receipt_{user.id}_{amount_toman}"),
+            InlineKeyboardButton("❌ رد رسید", callback_data=f"reject_receipt_{user.id}")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
+    message_to_admin = None
     for admin_id in ADMIN_CHAT_IDS:
         try:
             # ارسال عکس رسید
-            message = await context.bot.send_photo(
+            await context.bot.send_photo(
                 chat_id=admin_id,
                 photo=receipt_file_id,
                 caption=admin_message,
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✅ تأیید رسید", callback_data=f"approve_receipt_{user.id}_{amount_toman}_{receipt_id}"),
-                    InlineKeyboardButton("❌ رد رسید", callback_data=f"reject_receipt_{user.id}_{receipt_id}")
-                ]])
+                reply_markup=reply_markup
             )
-            admin_message_ids.append({
-                'admin_id': admin_id,
-                'message_id': message.message_id
-            })
-                
+            # ذخیره اطلاعات پیام برای ادمین
+            message_to_admin = admin_id
         except Exception as e:
             logger.error(f"Failed to send receipt to admin {admin_id}: {e}")
     
-    # ذخیره لیست message_idها
-    if receipt_id in receipts:
-        receipts[receipt_id]['admin_message_ids'] = admin_message_ids
-        save_pending_receipts(receipts)
+    # ذخیره رسید در لیست انتظار
+    receipt_id = add_pending_receipt(user_id, amount_toman, receipt_file_id, message_to_admin)
     
     # اطلاع به کاربر
     await update.message.reply_text(
@@ -1427,7 +1561,7 @@ async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """هندلر تأیید رسید توسط ادمین با مدیریت کلیک‌های مکرر"""
+    """هندلر تأیید رسید توسط ادمین با مدیریت خطای کاربر مسدود شده"""
     query = update.callback_query
     await query.answer()
     
@@ -1438,90 +1572,45 @@ async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT
     data_parts = query.data.split('_')
     user_id = int(data_parts[2])
     amount_toman = int(data_parts[3])
-    receipt_id = '_'.join(data_parts[4:]) if len(data_parts) > 4 else None
-    
-    # بررسی اینکه آیا این رسید قبلاً پردازش شده است
-    receipts = load_pending_receipts()
-    if receipt_id and receipt_id in receipts:
-        if receipts[receipt_id]['status'] != 'pending':
-            await query.answer("این رسید قبلاً پردازش شده است!", show_alert=True)
-            return
     
     # افزایش موجودی کاربر
     new_balance = update_user_balance(user_id, amount_toman)
     
     # به‌روزرسانی وضعیت رسید
+    receipt_id = None
+    receipts = load_pending_receipts()
+    for rid, receipt in receipts.items():
+        if receipt['user_id'] == user_id and receipt['amount_toman'] == amount_toman and receipt['status'] == 'pending':
+            receipt_id = rid
+            break
+    
     if receipt_id:
         update_receipt_status(receipt_id, 'approved', query.from_user.id)
     
     # اطلاع به کاربر
-    user_notified = False
     try:
         await context.bot.send_message(
             chat_id=user_id,
             text=f"✅ رسید شما تأیید شد!\n\n💰 مبلغ {amount_toman:,.0f} تومان به کیف پول شما اضافه شد.\n\n💳 موجودی جدید: {new_balance:,.0f} تومان",
             reply_markup=MAIN_MENU_REPLY_MARKUP
         )
-        user_notified = True
     except error.Forbidden:
         logger.warning(f"User {user_id} blocked the bot, cannot send receipt approval notification")
+        # اطلاع به ادمین که کاربر ربات را بلاک کرده
+        await query.message.reply_text(f"⚠️ رسید تأیید شد اما کاربر {user_id} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.")
+    except Exception as e:
+        logger.error(f"Failed to notify user {user_id}: {e}")
     
-    # غیرفعال کردن دکمه‌ها در پیام اصلی
-    admin_name = query.from_user.first_name
-    updated_caption = (
-        f"✅ رسید تأیید شد\n\n"
-        f"👤 کاربر: {user_id}\n"
-        f"💰 مبلغ: {amount_toman:,.0f} تومان\n"
-        f"✅ توسط: {admin_name}\n"
-        f"🕒 زمان: {datetime.datetime.now().strftime('%Y/%m/%d - %H:%M')}\n"
-        f"📞 کاربر {'مطلع شد' if user_notified else 'ربات را مسدود کرده'}"
-    )
-    
+    # به‌روزرسانی پیام ادمین
     try:
         await query.edit_message_caption(
-            caption=updated_caption,
-            reply_markup=None  # حذف دکمه‌ها
+            caption=f"✅ رسید تأیید شد\n\n👤 کاربر: {user_id}\n💰 مبلغ: {amount_toman:,.0f} تومان\n✅ توسط: {query.from_user.first_name}"
         )
     except Exception as e:
-        logger.error(f"Failed to edit message caption: {e}")
-    
-    # ارسال اطلاع به سایر ادمین‌ها
-    notification_text = (
-        f"🔔 اطلاع‌رسانی تأیید رسید\n\n"
-        f"👤 کاربر: {user_id}\n"
-        f"💰 مبلغ: {amount_toman:,.0f} تومان\n"
-        f"✅ توسط: {admin_name}\n"
-        f"💳 موجودی جدید کاربر: {new_balance:,.0f} تومان\n"
-        f"📞 وضعیت اطلاع‌رسانی: {'✅ موفق' if user_notified else '❌ کاربر ربات را مسدود کرده'}"
-    )
-    
-    for admin_id in ADMIN_CHAT_IDS:
-        if admin_id != query.from_user.id:  # به ادمین عمل‌کننده اطلاع نده
-            try:
-                await context.bot.send_message(admin_id, notification_text)
-                
-                # همچنین پیام اصلی را برای سایر ادمین‌ها به‌روزرسانی کن
-                receipts = load_pending_receipts()
-                if receipt_id in receipts:
-                    receipt = receipts[receipt_id]
-                    admin_message_id = receipt.get('message_to_admin_id')
-                    
-                    if admin_message_id and admin_message_id != query.message.message_id:
-                        try:
-                            await context.bot.edit_message_caption(
-                                chat_id=admin_id,
-                                message_id=admin_message_id,
-                                caption=updated_caption,
-                                reply_markup=None
-                            )
-                        except Exception as e:
-                            logger.error(f"Failed to update message for admin {admin_id}: {e}")
-                            
-            except Exception as e:
-                logger.error(f"Failed to notify admin {admin_id}: {e}")
+        logger.error(f"Failed to edit admin message: {e}")
 
 async def reject_receipt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """هندلر رد رسید توسط ادمین با نمایش اطلاعات کامل"""
+    """هندلر رد رسید توسط ادمین با مدیریت خطای کاربر مسدود شده"""
     query = update.callback_query
     await query.answer()
     
@@ -1531,98 +1620,38 @@ async def reject_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
     
     data_parts = query.data.split('_')
     user_id = int(data_parts[2])
-    receipt_id = '_'.join(data_parts[3:]) if len(data_parts) > 3 else None
-    
-    # بارگذاری اطلاعات رسیدها
-    receipts = load_pending_receipts()
-    
-    # بررسی اینکه آیا این رسید قبلاً پردازش شده است
-    if receipt_id and receipt_id in receipts:
-        if receipts[receipt_id]['status'] != 'pending':
-            await query.answer("این رسید قبلاً پردازش شده است!", show_alert=True)
-            return
-        
-        # دریافت مبلغ از اطلاعات ذخیره شده رسید
-        amount_toman = receipts[receipt_id]['amount_toman']
-    else:
-        # اگر receipt_id پیدا نشد، به دنبال رسید در انتظار برای این کاربر بگرد
-        amount_toman = 0
-        for rid, receipt in receipts.items():
-            if receipt['user_id'] == user_id and receipt['status'] == 'pending':
-                receipt_id = rid
-                amount_toman = receipt['amount_toman']
-                break
     
     # به‌روزرسانی وضعیت رسید
+    receipt_id = None
+    receipts = load_pending_receipts()
+    for rid, receipt in receipts.items():
+        if receipt['user_id'] == user_id and receipt['status'] == 'pending':
+            receipt_id = rid
+            break
+    
     if receipt_id:
         update_receipt_status(receipt_id, 'rejected', query.from_user.id)
     
     # اطلاع به کاربر
-    user_notified = False
     try:
         await context.bot.send_message(
             chat_id=user_id,
             text="❌ متأسفانه رسید شما توسط پشتیبانی رد شد.\n\nلطفاً با ارسال رسید معتبر دوباره تلاش کنید یا با پشتیبانی تماس بگیرید.",
             reply_markup=MAIN_MENU_REPLY_MARKUP
         )
-        user_notified = True
     except error.Forbidden:
         logger.warning(f"User {user_id} blocked the bot, cannot send receipt rejection notification")
+        await query.message.reply_text(f"⚠️ رسید رد شد اما کاربر {user_id} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.")
+    except Exception as e:
+        logger.error(f"Failed to notify user {user_id}: {e}")
     
-    # غیرفعال کردن دکمه‌ها در پیام اصلی با اطلاعات کامل
-    admin_name = query.from_user.first_name
-    updated_caption = (
-        f"❌ رسید رد شد\n\n"
-        f"👤 کاربر: {user_id}\n"
-        f"💰 مبلغ: {amount_toman:,.0f} تومان\n"
-        f"❌ توسط: {admin_name}\n"
-        f"🕒 زمان: {datetime.datetime.now().strftime('%Y/%m/%d - %H:%M')}\n"
-        f"📞 کاربر {'مطلع شد' if user_notified else 'ربات را مسدود کرده'}"
-    )
-    
+    # به‌روزرسانی پیام ادمین
     try:
         await query.edit_message_caption(
-            caption=updated_caption,
-            reply_markup=None  # حذف دکمه‌ها
+            caption=f"❌ رسید رد شد\n\n👤 کاربر: {user_id}\n❌ توسط: {query.from_user.first_name}"
         )
     except Exception as e:
-        logger.error(f"Failed to edit message caption: {e}")
-    
-    # ارسال اطلاع به سایر ادمین‌ها با اطلاعات کامل
-    notification_text = (
-        f"🔔 اطلاع‌رسانی رد رسید\n\n"
-        f"👤 کاربر: {user_id}\n"
-        f"💰 مبلغ: {amount_toman:,.0f} تومان\n"
-        f"❌ توسط: {admin_name}\n"
-        f"🕒 زمان: {datetime.datetime.now().strftime('%Y/%m/%d - %H:%M')}\n"
-        f"📞 وضعیت اطلاع‌رسانی: {'✅ موفق' if user_notified else '❌ کاربر ربات را مسدود کرده'}"
-    )
-    
-    for admin_id in ADMIN_CHAT_IDS:
-        if admin_id != query.from_user.id:  # به ادمین عمل‌کننده اطلاع نده
-            try:
-                await context.bot.send_message(admin_id, notification_text)
-                
-                # همچنین پیام اصلی را برای سایر ادمین‌ها به‌روزرسانی کن
-                receipts_updated = load_pending_receipts()
-                if receipt_id in receipts_updated:
-                    receipt = receipts_updated[receipt_id]
-                    admin_message_ids = receipt.get('admin_message_ids', [])
-                    
-                    for msg_info in admin_message_ids:
-                        if msg_info['admin_id'] == admin_id and msg_info['message_id'] != query.message.message_id:
-                            try:
-                                await context.bot.edit_message_caption(
-                                    chat_id=admin_id,
-                                    message_id=msg_info['message_id'],
-                                    caption=updated_caption,
-                                    reply_markup=None
-                                )
-                            except Exception as e:
-                                logger.error(f"Failed to update message for admin {admin_id}: {e}")
-                            
-            except Exception as e:
-                logger.error(f"Failed to notify admin {admin_id}: {e}")
+        logger.error(f"Failed to edit admin message: {e}")
 
 # ============================================================
 # --- دستور ادمین برای افزایش موجودی کاربر ---
@@ -1896,6 +1925,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 
             volume_display = panel_info['volume'].replace(' گیگ', 'GB')
             description = panel_info['description']
+            price_text = f"{panel_info['price_toman']:,.0f} تومان" if panel_info['price_toman'] > 0 else "رایگان"
             
             message_text = (
                 f"جزئیات پلن: {panel_info['label']}\n\n"
@@ -1903,13 +1933,21 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 f"اعتبار: {panel_info['days']} روز\n"
                 f"تعداد کاربر مجاز: {panel_info['users']} نفر\n"
                 f"توضیحات: {description}\n\n"
-                f"قیمت: {panel_info['price_toman']:,.0f} تومان"
+                f"قیمت: {price_text}"
             )
+            
+            # برای سرویس تست رایگان، پیام اضافی
+            if internal_key == "FREE_TRIAL":
+                user_id = query.from_user.id
+                if has_user_used_free_trial(user_id):
+                    message_text += "\n\n⚠️ شما قبلاً از سرویس تست رایگان استفاده کرده‌اید. هر کاربر تنها یک بار می‌تواند از این سرویس استفاده کند."
+                else:
+                    message_text += "\n\n⚠️ توجه: این سرویس فقط یک بار برای هر کاربر قابل استفاده است."
             
             buy_callback_data = f"CONFIRM_PLAN_PURCHASE_{internal_key}"
             
             keyboard = [
-                [InlineKeyboardButton(f"✅ تایید و خرید ({panel_info['price_toman']:,.0f} تومان)", callback_data=buy_callback_data)],
+                [InlineKeyboardButton(f"✅ تایید و خرید ({price_text})", callback_data=buy_callback_data)],
                 [InlineKeyboardButton("🔙 بازگشت به لیست پلن‌ها", callback_data=f"SELECT_SERVER_{context.user_data.get('selected_server', 'Server_1')}")] 
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1964,11 +2002,11 @@ def main() -> None:
     )
 
     purchase_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^🛍️ خرید سرویس \(انتخاب پلن\)$"), select_server_for_purchase)],
+        entry_points=[MessageHandler(filters.Regex(r"^🛍️ خرید سرویس$"), select_server_for_purchase)],
         states={
             STATE_SELECT_SERVER: [
                 CallbackQueryHandler(select_service_plan, pattern="^SELECT_SERVER_"),
-                MessageHandler(filters.Regex(r"^🛍️ خرید سرویس \(انتخاب پلن\)$"), select_server_for_purchase),
+                MessageHandler(filters.Regex(r"^🛍️ خرید سرویس$"), select_server_for_purchase),
             ],
         },
         fallbacks=[
