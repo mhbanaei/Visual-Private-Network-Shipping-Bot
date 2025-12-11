@@ -1,4 +1,4 @@
-# Full corrected bot file with card-to-card payment system
+# Full corrected bot file with card-to-card payment system + Referral System
 # Changes applied: 
 # 1. Removed Zarinpal gateway completely
 # 2. Added card-to-card payment with receipt upload
@@ -6,7 +6,7 @@
 # 4. Added FREE_TRIAL service (1GB, 1 day, 1 user) with one-time purchase limit
 # 5. Added check to prevent renewal of free trial service
 # 6. Moved free trial to services list (not separate button in main menu)
-# 7. Hossein Banaei 
+# 7. Added Referral System with permanent referral IDs and automatic commission
 
 import logging
 import requests
@@ -76,6 +76,10 @@ def get_protocol_settings(server_key):
         "v": "2"
     }
 
+# --- تنظیمات رفرال ---
+REFERRAL_PERCENT = 20  # درصد رفرال (مثلاً 20٪)
+REFERRAL_MIN_AMOUNT = 10000  # حداقل مبلغ شارژ برای احتساب رفرال (تومان)
+
 # --- وضعیت‌های Conversation ---
 STATE_GET_AMOUNT = 1
 STATE_GET_TICKET = 2
@@ -92,6 +96,7 @@ PENDING_PAYMENTS_FILE = 'pending_payments.json'
 USERS_FILE = 'users.json'
 PENDING_RECEIPTS_FILE = 'pending_receipts.json'  # فایل جدید برای رسیدهای در انتظار تأیید
 FREE_TRIAL_USERS_FILE = 'free_trial_users.json'  # فایل جدید برای رصد کاربران تست رایگان
+REFERRAL_DATA_FILE = 'referral_data.json'  # فایل جدید برای اطلاعات رفرال
 
 # --- لیست قیمت نهایی (واحد: تومان) ---
 SERVICES = {
@@ -115,6 +120,7 @@ MAIN_MENU_KEYBOARD = [
     ["🛍️ خرید سرویس"],
     ["📂 سرویس‌های من", "👤 حساب من"],
     ["💰 شارژ کیف پول", "📞 پشتیبانی"],
+    ["🔗 لینک رفرال"],  # اضافه کردن دکمه لینک رفرال
 ]
 MAIN_MENU_REPLY_MARKUP = ReplyKeyboardMarkup(MAIN_MENU_KEYBOARD, resize_keyboard=True)
 
@@ -153,7 +159,7 @@ def get_user_balance(user_id: int) -> float:
     str_user_id = str(user_id)
     
     if str_user_id not in users:
-        users[str_user_id] = {"balance": 0.0, "services": []}
+        users[str_user_id] = {"balance": 0.0, "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 0}
         save_users(users)
         return 0.0
     
@@ -164,9 +170,9 @@ def update_user_balance(user_id: int, amount_change: float):
     str_user_id = str(user_id)
     
     if str_user_id not in users:
-        users[str_user_id] = {"balance": 0.0, "services": []}
+        users[str_user_id] = {"balance": 0.0, "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 0}
     
-    current_balance = users[str_user_id]["balance"]
+    current_balance = users[str_user_id].get("balance", 0.0)
     new_balance = current_balance + amount_change
     users[str_user_id]["balance"] = new_balance
     
@@ -179,7 +185,7 @@ def add_user_service(user_id: int, config_name: str, sub_link: str, uuid: str, i
     str_user_id = str(user_id)
     
     if str_user_id not in users or 'services' not in users[str_user_id]:
-        users[str_user_id] = {"balance": users.get(str_user_id, {}).get("balance", 0.0), "services": []}
+        users[str_user_id] = {"balance": users.get(str_user_id, {}).get("balance", 0.0), "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 0}
     
     if not any(s['config_name'] == config_name for s in users[str_user_id]['services']):
         users[str_user_id]['services'].append({
@@ -294,6 +300,157 @@ def update_receipt_status(receipt_id: str, status: str, admin_id: int = None):
         save_pending_receipts(receipts)
         return True
     return False
+
+# ============================================================
+# --- توابع مدیریت سیستم رفرال ---
+# ============================================================
+
+def load_referral_data() -> dict:
+    """بارگذاری اطلاعات رفرال"""
+    if not os.path.exists(REFERRAL_DATA_FILE):
+        return {"referrals": {}, "earnings_history": {}}
+    try:
+        with open(REFERRAL_DATA_FILE, 'r') as f:
+            return json.load(f)
+    except (IOError, json.JSONDecodeError):
+        return {"referrals": {}, "earnings_history": {}}
+
+def save_referral_data(data: dict):
+    """ذخیره اطلاعات رفرال"""
+    with open(REFERRAL_DATA_FILE, 'w') as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+def get_user_referral_info(user_id: int) -> dict:
+    """دریافت اطلاعات رفرال کاربر"""
+    users = load_users()
+    str_user_id = str(user_id)
+    
+    if str_user_id not in users:
+        users[str_user_id] = {"balance": 0.0, "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 0}
+        save_users(users)
+    
+    return {
+        "referral_by": users[str_user_id].get("referral_by"),
+        "referral_earnings": users[str_user_id].get("referral_earnings", 0.0),
+        "referrals_count": users[str_user_id].get("referrals_count", 0)
+    }
+
+def set_user_referral(user_id: int, referred_by: int) -> bool:
+    """تنظیم رفرال برای کاربر (فقط اگر قبلاً تنظیم نشده باشد)"""
+    users = load_users()
+    str_user_id = str(user_id)
+    str_referred_by = str(referred_by)
+    
+    # اگر کاربر قبلاً رفرال داشته باشد، نمی‌توان آن را تغییر داد
+    if str_user_id in users and users[str_user_id].get("referral_by") is not None:
+        return False
+    
+    # اگر کاربر سعی کند خودش را رفرال کند
+    if user_id == referred_by:
+        return False
+    
+    # تنظیم رفرال
+    if str_user_id not in users:
+        users[str_user_id] = {"balance": 0.0, "services": [], "referral_by": referred_by, "referral_earnings": 0.0, "referrals_count": 0}
+    else:
+        users[str_user_id]["referral_by"] = referred_by
+    
+    # افزایش تعداد رفرال‌های رفرال دهنده
+    if str_referred_by in users:
+        users[str_referred_by]["referrals_count"] = users[str_referred_by].get("referrals_count", 0) + 1
+    else:
+        users[str_referred_by] = {"balance": 0.0, "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 1}
+    
+    save_users(users)
+    
+    # ذخیره در تاریخچه رفرال‌ها
+    referral_data = load_referral_data()
+    if str_referred_by not in referral_data["referrals"]:
+        referral_data["referrals"][str_referred_by] = []
+    
+    referral_data["referrals"][str_referred_by].append({
+        "user_id": user_id,
+        "date": datetime.datetime.now().isoformat(),
+        "status": "active"
+    })
+    
+    save_referral_data(referral_data)
+    logger.info(f"User {user_id} referred by {referred_by}")
+    return True
+
+def add_referral_earning(referred_user_id: int, amount_toman: int) -> float:
+    """اضافه کردن درآمد رفرال به حساب رفرال دهنده"""
+    users = load_users()
+    str_referred_user_id = str(referred_user_id)
+    
+    if str_referred_user_id not in users:
+        return 0.0
+    
+    referred_by = users[str_referred_user_id].get("referral_by")
+    if referred_by is None:
+        return 0.0
+    
+    str_referred_by = str(referred_by)
+    
+    # محاسبه پورسانت
+    referral_earning = (amount_toman * REFERRAL_PERCENT) / 100
+    
+    # افزایش موجودی رفرال دهنده
+    if str_referred_by in users:
+        current_balance = users[str_referred_by].get("balance", 0.0)
+        users[str_referred_by]["balance"] = current_balance + referral_earning
+        
+        # افزایش مجموع درآمدهای رفرال
+        current_earnings = users[str_referred_by].get("referral_earnings", 0.0)
+        users[str_referred_by]["referral_earnings"] = current_earnings + referral_earning
+    else:
+        users[str_referred_by] = {
+            "balance": referral_earning,
+            "services": [],
+            "referral_by": None,
+            "referral_earnings": referral_earning,
+            "referrals_count": 1
+        }
+    
+    save_users(users)
+    
+    # ذخیره در تاریخچه درآمدها
+    referral_data = load_referral_data()
+    if "earnings_history" not in referral_data:
+        referral_data["earnings_history"] = {}
+    
+    if str_referred_by not in referral_data["earnings_history"]:
+        referral_data["earnings_history"][str_referred_by] = []
+    
+    referral_data["earnings_history"][str_referred_by].append({
+        "from_user": referred_user_id,
+        "amount": referral_earning,
+        "original_amount": amount_toman,
+        "percent": REFERRAL_PERCENT,
+        "date": datetime.datetime.now().isoformat()
+    })
+    
+    save_referral_data(referral_data)
+    logger.info(f"Added {referral_earning} تومان referral earning to user {referred_by} from user {referred_user_id}")
+    return referral_earning
+
+def get_referral_history(referrer_id: int) -> list:
+    """دریافت تاریخچه رفرال‌های یک کاربر"""
+    referral_data = load_referral_data()
+    str_referrer_id = str(referrer_id)
+    
+    if str_referrer_id in referral_data.get("referrals", {}):
+        return referral_data["referrals"][str_referrer_id]
+    return []
+
+def get_referral_earnings_history(referrer_id: int) -> list:
+    """دریافت تاریخچه درآمدهای رفرال یک کاربر"""
+    referral_data = load_referral_data()
+    str_referrer_id = str(referrer_id)
+    
+    if str_referrer_id in referral_data.get("earnings_history", {}):
+        return referral_data["earnings_history"][str_referrer_id]
+    return []
 
 # ============================================================
 # --- توابع API پنل X-UI (سیستم چند سروره) ---
@@ -661,8 +818,36 @@ def convert_bytes_to_display(bytes_val: int) -> str:
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """هندلر دستور /start"""
+    """هندلر دستور /start با پشتیبانی از رفرال"""
     user = update.effective_user
+    
+    # بررسی پارامترهای لینک برای رفرال
+    args = context.args
+    referral_id = None
+    
+    if args and len(args) > 0:
+        # بررسی فرمت‌های مختلف رفرال
+        referral_arg = args[0]
+        
+        # فرمت: /start ref_12345
+        if referral_arg.startswith('ref_') and len(referral_arg) > 4:
+            try:
+                referral_id = int(referral_arg[4:])
+            except ValueError:
+                referral_id = None
+        
+        # فرمت: /start 12345 (مستقیم عدد)
+        elif referral_arg.isdigit():
+            try:
+                referral_id = int(referral_arg)
+            except ValueError:
+                referral_id = None
+    
+    # تنظیم رفرال برای کاربر اگر وجود داشته باشد
+    if referral_id:
+        success = set_user_referral(user.id, referral_id)
+        if success:
+            logger.info(f"User {user.id} registered with referral from {referral_id}")
     
     # پیام خوش‌آمدگویی
     await update.message.reply_text(
@@ -694,22 +879,124 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.error(f"Failed to handle error or notify user/admin: {e}")
 
 async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """نمایش موجودی کیف پول و مشخصات کاربر"""
-    balance = get_user_balance(update.effective_user.id)
-    num_services = len(get_user_services(update.effective_user.id))
+    """نمایش موجودی کیف پول و مشخصات کاربر با اطلاعات رفرال"""
+    user_id = update.effective_user.id
+    balance = get_user_balance(user_id)
+    num_services = len(get_user_services(user_id))
+    
+    # دریافت اطلاعات رفرال
+    referral_info = get_user_referral_info(user_id)
+    referral_by = referral_info.get("referral_by")
+    referral_earnings = referral_info.get("referral_earnings", 0.0)
+    referrals_count = referral_info.get("referrals_count", 0)
     
     message_text = (
         f"**👤 جزئیات حساب کاربری**\n\n"
-        f"🔹 **شناسه کاربری (ID):** `{update.effective_user.id}`\n"
+        f"🔹 **شناسه کاربری (ID):** `{user_id}`\n"
         f"🔹 **موجودی کیف پول:** **{balance:,.0f}** تومان\n"
-        f"🔹 **تعداد سرویس فعال:** **{num_services}** عدد\n\n"
-        f"**نکته:** برای شارژ، از دکمه «💰 شارژ کیف پول» در منوی اصلی استفاده کنید."
+        f"🔹 **تعداد سرویس فعال:** **{num_services}** عدد\n"
+    )
+    
+    # اضافه کردن اطلاعات رفرال
+    if referral_by:
+        message_text += f"🔹 **رفرال دهنده:** `{referral_by}`\n"
+    
+    message_text += (
+        f"🔹 **تعداد کاربران رفرال:** **{referrals_count}** نفر\n"
+        f"🔹 **درآمد رفرال:** **{referral_earnings:,.0f}** تومان\n\n"
+        f"**نکته:** برای شارژ، از دکمه «💰 شارژ کیف پول» در منوی اصلی استفاده کنید.\n"
+        f"برای دریافت لینک رفرال خود، روی دکمه «🔗 لینک رفرال» کلیک کنید."
     )
     
     await update.message.reply_text(
         message_text,
         parse_mode="Markdown",
     )
+
+async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش لینک رفرال کاربر"""
+    user_id = update.effective_user.id
+    
+    # ساخت لینک رفرال
+    bot_username = (await context.bot.get_me()).username
+    ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    
+    # دریافت اطلاعات رفرال
+    referral_info = get_user_referral_info(user_id)
+    referral_earnings = referral_info.get("referral_earnings", 0.0)
+    referrals_count = referral_info.get("referrals_count", 0)
+    
+    message_text = (
+        f"**🔗 لینک رفرال شما**\n\n"
+        f"لینک اختصاصی شما:\n`{ref_link}`\n\n"
+        f"**📊 آمار رفرال شما:**\n"
+        f"🔸 تعداد کاربران جذب شده: **{referrals_count}** نفر\n"
+        f"🔸 مجموع درآمد رفرال: **{referral_earnings:,.0f}** تومان\n"
+        f"🔸 درصد رفرال: **{REFERRAL_PERCENT}%**\n\n"
+        f"**📝 نحوه کار:**\n"
+        f"1. لینک بالا را برای دوستان خود ارسال کنید\n"
+        f"2. دوستان شما با کلیک روی لینک وارد ربات می‌شوند\n"
+        f"3. رفرال شما برای همیشه در پروفایلشان ثبت می‌شود\n"
+        f"4. از هر شارژی که انجام دهند، **{REFERRAL_PERCENT}%** به حساب شما اضافه می‌شود\n\n"
+        f"**⚠️ توجه:**\n"
+        f"• رفرال هر کاربر فقط یک بار و در اولین ورود ثبت می‌شود\n"
+        f"• مبلغ شارژ باید حداقل **{REFERRAL_MIN_AMOUNT:,}** تومان باشد تا رفرال محاسبه شود\n"
+        f"• رفرال پس از تأیید رسید شارژ توسط ادمین به حساب شما واریز می‌شود"
+    )
+    
+    # ایجاد دکمه‌های اشتراک‌گذاری
+    keyboard = [
+        [InlineKeyboardButton("📲 اشتراک‌گذاری لینک", url=f"tg://msg_url?url={ref_link}&text=لینک%20رفرال%20من")],
+        [InlineKeyboardButton("📊 تاریخچه درآمد رفرال", callback_data=f"REFERRAL_HISTORY_{user_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        message_text,
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
+
+async def referral_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش تاریخچه درآمدهای رفرال کاربر"""
+    query = update.callback_query
+    await query.answer("در حال دریافت تاریخچه...")
+    
+    user_id = query.from_user.id
+    
+    # دریافت تاریخچه درآمدها
+    earnings_history = get_referral_earnings_history(user_id)
+    
+    if not earnings_history:
+        message_text = "📊 **تاریخچه درآمد رفرال**\n\nشما هنوز درآمد رفرالی نداشته‌اید."
+        try:
+            await query.edit_message_text(message_text, parse_mode="Markdown")
+        except Exception:
+            await context.bot.send_message(user_id, message_text, parse_mode="Markdown")
+        return
+    
+    # محاسبه مجموع
+    total_earnings = sum(item['amount'] for item in earnings_history)
+    
+    message_text = f"📊 **تاریخچه درآمد رفرال**\n\n"
+    message_text += f"**مجموع درآمد:** **{total_earnings:,.0f}** تومان\n\n"
+    message_text += "**آخرین تراکنش‌ها:**\n"
+    
+    # نمایش 10 تراکنش آخر
+    for i, earning in enumerate(earnings_history[-10:], 1):
+        date = datetime.datetime.fromisoformat(earning['date']).strftime("%Y/%m/%d")
+        message_text += f"{i}. از کاربر `{earning['from_user']}` - {earning['amount']:,.0f} تومان ({date})\n"
+    
+    if len(earnings_history) > 10:
+        message_text += f"\nو {len(earnings_history) - 10} تراکنش دیگر..."
+    
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_referral_link")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception:
+        await context.bot.send_message(user_id, message_text, parse_mode="Markdown", reply_markup=reply_markup)
 
 # 🌟 انتخاب سرور قبل از انتخاب سرویس
 async def select_server_for_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1449,7 +1736,6 @@ async def wallet_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         f"موجودی فعلی شما: {current_balance:,.0f} تومان\n\n"
         f"لطفاً مبلغ مورد نظر را به شماره کارت زیر واریز کنید:\n"
         f"`{CARD_NUMBER}`\n"
-        f"`Mohammad Hossein Banaei`\n\n"
         f"سپس عکس رسید بانکی را در همین چت ارسال کنید."
     )
     
@@ -1562,7 +1848,7 @@ async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """هندلر تأیید رسید توسط ادمین با مدیریت خطای کاربر مسدود شده"""
+    """هندلر تأیید رسید توسط ادمین با مدیریت خطای کاربر مسدود شده و محاسبه رفرال"""
     query = update.callback_query
     await query.answer()
     
@@ -1577,6 +1863,11 @@ async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT
     # افزایش موجودی کاربر
     new_balance = update_user_balance(user_id, amount_toman)
     
+    # محاسبه و اضافه کردن پورسانت رفرال (اگر مبلغ به حداقل رسید)
+    referral_earning = 0.0
+    if amount_toman >= REFERRAL_MIN_AMOUNT:
+        referral_earning = add_referral_earning(user_id, amount_toman)
+    
     # به‌روزرسانی وضعیت رسید
     receipt_id = None
     receipts = load_pending_receipts()
@@ -1590,9 +1881,15 @@ async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT
     
     # اطلاع به کاربر
     try:
+        message_text = f"✅ رسید شما تأیید شد!\n\n💰 مبلغ {amount_toman:,.0f} تومان به کیف پول شما اضافه شد.\n\n💳 موجودی جدید: {new_balance:,.0f} تومان"
+        
+        # اضافه کردن اطلاعات رفرال اگر رفرال‌ای داشت
+        if referral_earning > 0:
+            message_text += f"\n\n🎉 پورسانت رفرال: {referral_earning:,.0f} تومان نیز به حساب رفرال دهنده شما واریز شد."
+        
         await context.bot.send_message(
             chat_id=user_id,
-            text=f"✅ رسید شما تأیید شد!\n\n💰 مبلغ {amount_toman:,.0f} تومان به کیف پول شما اضافه شد.\n\n💳 موجودی جدید: {new_balance:,.0f} تومان",
+            text=message_text,
             reply_markup=MAIN_MENU_REPLY_MARKUP
         )
     except error.Forbidden:
@@ -1603,10 +1900,14 @@ async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT
         logger.error(f"Failed to notify user {user_id}: {e}")
     
     # به‌روزرسانی پیام ادمین
+    admin_message = f"✅ رسید تأیید شد\n\n👤 کاربر: {user_id}\n💰 مبلغ: {amount_toman:,.0f} تومان\n✅ توسط: {query.from_user.first_name}"
+    
+    # اضافه کردن اطلاعات رفرال به پیام ادمین
+    if referral_earning > 0:
+        admin_message += f"\n🎉 پورسانت رفرال: {referral_earning:,.0f} تومان به رفرال دهنده واریز شد."
+    
     try:
-        await query.edit_message_caption(
-            caption=f"✅ رسید تأیید شد\n\n👤 کاربر: {user_id}\n💰 مبلغ: {amount_toman:,.0f} تومان\n✅ توسط: {query.from_user.first_name}"
-        )
+        await query.edit_message_caption(caption=admin_message)
     except Exception as e:
         logger.error(f"Failed to edit admin message: {e}")
 
@@ -1889,6 +2190,14 @@ async def back_to_services(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """بازگشت به لیست سرویس‌های من از طریق دکمه شیشه‌ای"""
     await my_services(update, context)
 
+async def back_to_referral_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بازگشت به لینک رفرال از تاریخچه"""
+    query = update.callback_query
+    await query.answer("بازگشت...")
+    user_id = query.from_user.id
+    
+    await my_referral(update, context)
+
 async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """هندلر جامع برای دکمه‌های شیشه‌ای (غیر از مکالمات)"""
     query = update.callback_query
@@ -1904,11 +2213,17 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     if data == "back_to_select_server":
         return await back_to_select_server(update, context)
         
+    if data == "back_to_referral_link":
+        return await back_to_referral_link(update, context)
+        
     if data.startswith("approve_receipt_"):
         return await approve_receipt_callback(update, context)
         
     if data.startswith("reject_receipt_"):
         return await reject_receipt_callback(update, context)
+        
+    if data.startswith("REFERRAL_HISTORY_"):
+        return await referral_history(update, context)
         
     if data.startswith("SERVICE_DETAILS_"):
         config_name_or_plan_key = data.split("SERVICE_DETAILS_")[1]
@@ -2036,6 +2351,7 @@ def main() -> None:
     application.add_error_handler(error_handler)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("add", add_balance_command))  # دستور ادمین
+    application.add_handler(CommandHandler("myref", my_referral))  # دستور نمایش لینک رفرال
     
     application.add_handler(wallet_conv_handler)
     application.add_handler(support_conv_handler)
@@ -2047,10 +2363,11 @@ def main() -> None:
     
     # هندلرهای دکمه‌های شیشه‌ای
     application.add_handler(CallbackQueryHandler(back_to_select_server, pattern="^back_to_select_server$"))
-    application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^SERVICE_DETAILS_|SHOW_SUB_LINK_|back_to_main_from_services|back_to_services|OPEN_MY_SERVICES|approve_receipt_|reject_receipt_"))
+    application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^SERVICE_DETAILS_|SHOW_SUB_LINK_|back_to_main_from_services|back_to_services|OPEN_MY_SERVICES|approve_receipt_|reject_receipt_|REFERRAL_HISTORY_|back_to_referral_link"))
     
     application.add_handler(MessageHandler(filters.Regex(r"^👤 حساب من$"), my_account))
     application.add_handler(MessageHandler(filters.Regex(r"^📂 سرویس‌های من$"), my_services))
+    application.add_handler(MessageHandler(filters.Regex(r"^🔗 لینک رفرال$"), my_referral))  # هندلر دکمه لینک رفرال
     
     application.add_handler(
         MessageHandler(
