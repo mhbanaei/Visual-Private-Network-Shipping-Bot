@@ -1,4 +1,4 @@
-# Full corrected bot file with card-to-card payment system + Referral System
+# Full corrected bot file with card-to-card payment system + Referral System + آموزش اتصال
 # Changes applied: 
 # 1. Removed Zarinpal gateway completely
 # 2. Added card-to-card payment with receipt upload
@@ -7,6 +7,7 @@
 # 5. Added check to prevent renewal of free trial service
 # 6. Moved free trial to services list (not separate button in main menu)
 # 7. Added Referral System with permanent referral IDs and automatic commission
+# 8. Added complete connection tutorial section with Hiddify, V2rayNG, V2Box, etc.
 
 import logging
 import requests
@@ -120,9 +121,202 @@ MAIN_MENU_KEYBOARD = [
     ["🛍️ خرید سرویس"],
     ["📂 سرویس‌های من", "👤 حساب من"],
     ["💰 شارژ کیف پول", "📞 پشتیبانی"],
-    ["🔗 لینک رفرال"],  # اضافه کردن دکمه لینک رفرال
+    ["🔗 لینک رفرال", "📚 آموزش اتصال"],  # اضافه کردن دکمه آموزش اتصال
 ]
 MAIN_MENU_REPLY_MARKUP = ReplyKeyboardMarkup(MAIN_MENU_KEYBOARD, resize_keyboard=True)
+
+# ============================================================
+# --- محتوای آموزشی برنامه‌های مختلف ---
+# ============================================================
+
+CONNECTION_TUTORIALS = {
+    # Hiddify - Android
+    "hiddify_android": {
+        "title": "📱 آموزش اتصال با Hiddify (Android)",
+        "steps": [
+            "1. ابتدا برنامه Hiddify را از فروشگاه Google Play دانلود و نصب کنید.",
+            "1.1 https://play.google.com/store/apps/details?id=app.hiddify.com&hl=en",
+            "2. برنامه را باز کرده و روی علامت ➕ در  صفحه کلیک کنید.",
+            "3. گزینه 'Add from Clipboard' یا 'وارد کردن از کلیپ‌برد' را انتخاب کنید.",
+            "4. لینک اشتراک خود را از ربات کپی کرده و در این قسمت paste کنید.",
+            "5. روی 'Add' کلیک کنید تا کانفیگ اضافه شود.",
+            "6. حالا روی دکمه روشن/خاموش (🔘) در کنار کانفیگ خود کلیک کنید تا اتصال برقرار شود.",
+            "",
+            "📌 نکات مهم:",
+            "• این برنامه به صورت خودکار بهترین پروتکل را انتخاب می‌کند.",
+            "• برای قطع اتصال، دوباره روی دکمه روشن/خاموش کلیک کنید."
+        ]
+    },
+    
+    # Hiddify - iOS
+    "hiddify_ios": {
+        "title": "📱 آموزش اتصال با Hiddify (iOS)",
+        "steps": [
+            "1. ابتدا برنامه Hiddify را از فروشگاه App Store دانلود و نصب کنید.",
+            "1.1 https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532",
+            "2. برنامه را باز کرده و روی علامت ➕ در  صفحه کلیک کنید.",
+            "3. گزینه 'Add from Clipboard' یا 'وارد کردن از کلیپ‌برد' را انتخاب کنید.",
+            "4. لینک اشتراک خود را از ربات کپی کرده و در این قسمت paste کنید.",
+            "5. روی 'Add' کلیک کنید تا کانفیگ اضافه شود.",
+            "6. حالا روی دکمه روشن/خاموش (🔘) در کنار کانفیگ خود کلیک کنید تا اتصال برقرار شود.",
+            "",
+            "📌 نکات مهم:",
+            "• این برنامه کاملاً رایگان است.",
+            "",
+            "• این برنامه به صورت خودکار بهترین پروتکل را انتخاب می‌کند.",
+            "• برای قطع اتصال، دوباره روی دکمه روشن/خاموش کلیک کنید."
+        ]
+    },
+    
+    # V2rayNG - Android
+    "v2rayng_android": {
+        "title": "📱 آموزش اتصال با V2rayNG (Android)",
+        "steps": [
+            "1. برنامه V2rayNG را از لینک زیر دانلود کنید:",
+            "https://github.com/2dust/v2rayNG/releases/download/1.10.26/v2rayNG_1.10.26_universal.apk",
+            "(آخرین نسخه APK را دانلود و نصب کنید)",
+            "",
+            "2. برنامه را باز کرده و روی علامت ➕ در بالا سمت راست کلیک کنید.",
+            "3. لینک اشتراک خود را از ربات کپی کرده ",
+            "4. گزینه 'Import config from clipboard' را انتخاب کنید.",
+            "5. حالا کانفیگ شما در لیست ظاهر می‌شود. روی آن کلیک کنید.",
+            "6. در صفحه باز شده، دکمه V را در پایین صفحه فشار دهید تا اتصال برقرار شود.",
+            "7. برای قطع اتصال، دوباره روی دکمه V کلیک کنید.",
+            "",
+            "📌 نکات مهم:",
+            "• این برنامه کاملاً رایگان است.",
+            "",
+            "⚠️ توجه: اگر کانفیگ کار نکرد، مطمئن شوید تاریخ دستگاه شما درست باشد."
+        ]
+    },
+    
+    # V2Box - iOS
+    "v2box_ios": {
+        "title": "📱 آموزش اتصال با V2Box (iOS)",
+        "steps": [
+            "1. برنامه V2Box را از App Store دانلود و نصب کنید.",
+            "1.1 https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690",
+            "",
+            "2. لینک اشتراک خود را از ربات کپی کرده",
+            "3. برنامه را باز کرده و روی علامت ➕ در بالا سمت راست کلیک کنید.",
+            "4. گزینه 'Import from Clipboard' را انتخاب کنید.",
+            "5. لینک اشتراک خود را از ربات کپی کرده و در این قسمت paste کنید.",
+            "6. حالا کانفیگ شما در لیست ظاهر می‌شود. روی آن کلیک کنید تا انتخاب شود.",
+            "7. روی دکمه 'Connect' در پایین صفحه کلیک کنید.",
+            "8. اگر پیام 'VPN Configuration' ظاهر شد، روی 'Allow' کلیک کنید.",
+            "9. حالا باید به اینترنت متصل شوید.",
+            "",
+            "📌 نکات مهم:",
+            "• این برنامه کاملاً رایگان است.",
+            "",
+            "⚠️ مشکل احتمالی: اگر اتصال برقرار نشد، برنامه را یکبار بسته و مجدداً باز کنید."
+        ]
+    },
+    
+    # V2rayN - Windows
+    "v2rayn_windows": {
+        "title": "💻 آموزش اتصال با V2rayN (Windows)",
+        "steps": [
+            "1. برنامه V2rayN را از لینک زیر دانلود کنید:",
+            "https://github.com/2dust/v2rayN/releases/download/7.16.6/v2rayN-windows-64.zip",
+            "(فایل v2rayN.zip را دانلود و extract کنید)",
+            "",
+            "2. وارد پوشه ای که فایل رو دانلود کردید بشید و فایل رو Extract کنید",
+            "3. برنامه رو بازکنید و پیش نیاز های آن را نصب نمایید",
+            "4. لینک اشتراک خود را از ربات کپی کرده",
+            "5. بر روی برنامه کلیک کنید و با استفاده کلید واژه CTRL+V کانفیگ خود را انتقال بدید",
+            "6. برای متصل شدن از بخش System Proxy  که در پایین برنامه قرار دارد set System Proxy را انتخاب کنید",
+            "7. برای قطع کردن سرویس از بخش System Proxy  که در پایین برنامه قرار دارد Clear System Proxy را انتخاب کنید",
+            "",
+        ]
+    },
+    
+    # Hiddify - Windows
+    "hiddify_windows": {
+        "title": "💻 آموزش اتصال با Hiddify (Windows)",
+        "steps": [
+            "1. برنامه Hiddify برای Windows را از لینک زیر دانلود کنید:",
+            "https://github.com/hiddify/hiddify-next/releases/latest/download/Hiddify-Windows-Setup-x64.exe",
+            "(فایل Hiddify.Windows.Setup.exe را دانلود کنید)",
+            "",
+            "2. برنامه را باز کرده و روی علامت ➕ در  صفحه کلیک کنید.",
+            "3. گزینه 'Add from Clipboard' یا 'وارد کردن از کلیپ‌برد' را انتخاب کنید.",
+            "4. لینک اشتراک خود را از ربات کپی کرده و در این قسمت paste کنید.",
+            "5. روی 'Add' کلیک کنید تا کانفیگ اضافه شود.",
+            "6. حالا روی دکمه روشن/خاموش (🔘) در کنار کانفیگ خود کلیک کنید تا اتصال برقرار شود.",
+            "",
+            "⚠️ نکته: برای عملکرد بهتر، آنتی‌ویروس را موقتاً غیرفعال کنید."
+        ]
+    },
+    
+    # آموزش کلی برای همه
+    "general_tips": {
+        "title": "📌 نکات کلی و عیب‌یابی",
+        "steps": [
+            "🔹 **مشکلات رایج و راه‌حل‌ها:**",
+            "",
+            "1. **کانفیگ کار نمی‌کند:**",
+            "   • تاریخ و ساعت دستگاه خود را بررسی کنید (باید دقیق باشد).",
+            "   • کانفیگ منقضی نشده باشد.",
+            "   • حجم کانفیگ تمام نشده باشد.",
+            "",
+            "2. **سرعت کم است:**",
+            #"   • سرور دیگری را امتحان کنید.",
+            "   • موقعیت جغرافیایی خود را بررسی کنید.",
+            "   • از شبکه اینترنت دیگری تست کنید.",
+            "",
+            "3. **قطع و وصل می‌شود:**",
+            "   • تنظیمات Battery Optimization را برای برنامه غیرفعال کنید.",
+            "   • در Android: Settings > Apps > [App Name] > Battery > Unrestricted",
+            "   • از شبکه پایدارتری استفاده کنید.",
+            "",
+            "4. **برنامه crash می‌کند:**",
+            "   • برنامه را حذف و مجدداً نصب کنید.",
+            "   • از آخرین نسخه برنامه استفاده کنید.",
+            "   • حافظه دستگاه را خالی کنید.",
+            "",
+            "5. **ایرانسل/همراه اول فیلتر کرده:**",
+            "   • با پشتیبانی تماس بگیرید.",
+            "",
+            "🔹 **پشتیبانی:**",
+            "اگر مشکلتان حل نشد، از دکمه '📞 پشتیبانی' استفاده کنید."
+        ]
+    }
+}
+
+# ============================================================
+# --- ساختار منوی آموزش ---
+# ============================================================
+
+TUTORIAL_CATEGORIES = {
+    "android": {
+        "title": "📱 آموزش برای Android",
+        "apps": [
+            {"name": "Hiddify (توصیه شده)", "key": "hiddify_android"},
+            {"name": "V2rayNG", "key": "v2rayng_android"},
+        ]
+    },
+    "ios": {
+        "title": "📱 آموزش برای iOS",
+        "apps": [
+            {"name": "Hiddify (توصیه شده)", "key": "hiddify_ios"},
+            {"name": "V2Box", "key": "v2box_ios"},
+        ]
+    },
+    "windows": {
+        "title": "💻 آموزش برای Windows",
+        "apps": [
+            {"name": "Hiddify (توصیه شده)", "key": "hiddify_windows"},
+            {"name": "V2rayN", "key": "v2rayn_windows"},
+        ]
+    },
+    "tips": {
+        "title": "📌 نکات کلی و عیب‌یابی",
+        "apps": [
+            {"name": "مشکلات رایج و راه‌حل", "key": "general_tips"},
+        ]
+    }
+}
 
 # دیکشنری برای نگهداری Cookie هر سرور
 XUI_AUTH_COOKIES = {}
@@ -997,6 +1191,149 @@ async def referral_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
     except Exception:
         await context.bot.send_message(user_id, message_text, parse_mode="Markdown", reply_markup=reply_markup)
+
+# ============================================================
+# --- بخش آموزش اتصال ---
+# ============================================================
+
+async def connection_tutorials_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """شروع بخش آموزش اتصال"""
+    message_text = (
+        "📚 **آموزش اتصال**\n\n"
+        "در این بخش می‌توانید آموزش‌های کامل برای اتصال به سرویس VPN را مشاهده کنید.\n"
+        "لطفاً ابتدا سیستم عامل خود را انتخاب کنید:"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("📱 Android", callback_data="TUTORIAL_CAT_android")],
+        [InlineKeyboardButton("📱 iOS", callback_data="TUTORIAL_CAT_ios")],
+        [InlineKeyboardButton("💻 Windows", callback_data="TUTORIAL_CAT_windows")],
+        [InlineKeyboardButton("📌 نکات کلی و عیب‌یابی", callback_data="TUTORIAL_CAT_tips")],
+        [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_to_main_from_tutorial")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+
+async def tutorial_category_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش برنامه‌های موجود در هر دسته"""
+    query = update.callback_query
+    await query.answer()
+    
+    category = query.data.split("TUTORIAL_CAT_")[1]
+    category_info = TUTORIAL_CATEGORIES.get(category)
+    
+    if not category_info:
+        await query.edit_message_text("❌ دسته‌بندی مورد نظر پیدا نشد.")
+        return
+    
+    message_text = f"**{category_info['title']}**\n\nلطفاً یکی از برنامه‌های زیر را انتخاب کنید:"
+    
+    keyboard = []
+    for app in category_info['apps']:
+        keyboard.append([InlineKeyboardButton(app['name'], callback_data=f"TUTORIAL_APP_{app['key']}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت به دسته‌بندی‌ها", callback_data="back_to_tutorial_categories")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Failed to edit tutorial category message: {e}")
+
+async def tutorial_app_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش آموزش کامل برای برنامه انتخاب شده"""
+    query = update.callback_query
+    await query.answer()
+    
+    app_key = query.data.split("TUTORIAL_APP_")[1]
+    tutorial_info = CONNECTION_TUTORIALS.get(app_key)
+    
+    if not tutorial_info:
+        await query.edit_message_text("❌ آموزش مورد نظر پیدا نشد.")
+        return
+    
+    # ساخت پیام آموزش
+    message_text = f"**{tutorial_info['title']}**\n\n"
+    
+    # اضافه کردن مراحل
+    for step in tutorial_info['steps']:
+        message_text += f"{step}\n"
+    
+    # اضافه کردن دکمه‌های برگشت
+    keyboard = []
+    
+    # تشخیص دسته‌بندی بر اساس کلید
+    if "android" in app_key:
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت به Android", callback_data="TUTORIAL_CAT_android")])
+    elif "ios" in app_key:
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت به iOS", callback_data="TUTORIAL_CAT_ios")])
+    elif "windows" in app_key:
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت به Windows", callback_data="TUTORIAL_CAT_windows")])
+    else:
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت به نکات کلی", callback_data="TUTORIAL_CAT_tips")])
+    
+    keyboard.append([InlineKeyboardButton("🏠 بازگشت به منوی اصلی", callback_data="back_to_main_from_tutorial")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # ارسال پیام (اگر پیام طولانی باشد، ممکن است نیاز به تقسیم داشته باشد)
+    try:
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except error.BadRequest as e:
+        if "Message is too long" in str(e):
+            # اگر پیام خیلی طولانی است، آن را به چند قسمت تقسیم می‌کنیم
+            parts = []
+            current_part = f"**{tutorial_info['title']}**\n\n"
+            
+            for step in tutorial_info['steps']:
+                if len(current_part) + len(step) + 1 < 4000:  # حد تلگرام
+                    current_part += step + "\n"
+                else:
+                    parts.append(current_part)
+                    current_part = step + "\n"
+            
+            if current_part:
+                parts.append(current_part)
+            
+            # ارسال اولین قسمت با دکمه‌ها
+            await query.edit_message_text(parts[0], parse_mode="Markdown", reply_markup=reply_markup)
+            
+            # ارسال قسمت‌های باقی‌مانده
+            for part in parts[1:]:
+                await context.bot.send_message(
+                    chat_id=query.from_user.id,
+                    text=part,
+                    parse_mode="Markdown"
+                )
+        else:
+            raise
+
+async def back_to_tutorial_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بازگشت به دسته‌بندی‌های آموزش"""
+    query = update.callback_query
+    await query.answer()
+    
+    message_text = (
+        "📚 **آموزش اتصال**\n\n"
+        "در این بخش می‌توانید آموزش‌های کامل برای اتصال به سرویس VPN را مشاهده کنید.\n"
+        "لطفاً ابتدا سیستم عامل خود را انتخاب کنید:"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("📱 Android", callback_data="TUTORIAL_CAT_android")],
+        [InlineKeyboardButton("📱 iOS", callback_data="TUTORIAL_CAT_ios")],
+        [InlineKeyboardButton("💻 Windows", callback_data="TUTORIAL_CAT_windows")],
+        [InlineKeyboardButton("📌 نکات کلی و عیب‌یابی", callback_data="TUTORIAL_CAT_tips")],
+        [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_to_main_from_tutorial")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Failed to edit back to tutorial categories: {e}")
 
 # 🌟 انتخاب سرور قبل از انتخاب سرویس
 async def select_server_for_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2198,6 +2535,13 @@ async def back_to_referral_link(update: Update, context: ContextTypes.DEFAULT_TY
     
     await my_referral(update, context)
 
+async def back_to_main_from_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بازگشت به منوی اصلی از بخش آموزش"""
+    query = update.callback_query
+    await query.answer("بازگشت به منوی اصلی...")
+    
+    await send_main_menu(query.from_user.id, context)
+
 async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """هندلر جامع برای دکمه‌های شیشه‌ای (غیر از مکالمات)"""
     query = update.callback_query
@@ -2216,6 +2560,9 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     if data == "back_to_referral_link":
         return await back_to_referral_link(update, context)
         
+    if data == "back_to_main_from_tutorial":
+        return await back_to_main_menu(update, context)
+        
     if data.startswith("approve_receipt_"):
         return await approve_receipt_callback(update, context)
         
@@ -2224,6 +2571,15 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         
     if data.startswith("REFERRAL_HISTORY_"):
         return await referral_history(update, context)
+        
+    if data.startswith("TUTORIAL_CAT_"):
+        return await tutorial_category_handler(update, context)
+        
+    if data.startswith("TUTORIAL_APP_"):
+        return await tutorial_app_handler(update, context)
+        
+    if data == "back_to_tutorial_categories":
+        return await back_to_tutorial_categories(update, context)
         
     if data.startswith("SERVICE_DETAILS_"):
         config_name_or_plan_key = data.split("SERVICE_DETAILS_")[1]
@@ -2352,6 +2708,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("add", add_balance_command))  # دستور ادمین
     application.add_handler(CommandHandler("myref", my_referral))  # دستور نمایش لینک رفرال
+    application.add_handler(CommandHandler("tutorial", connection_tutorials_start))  # دستور آموزش
     
     application.add_handler(wallet_conv_handler)
     application.add_handler(support_conv_handler)
@@ -2363,11 +2720,15 @@ def main() -> None:
     
     # هندلرهای دکمه‌های شیشه‌ای
     application.add_handler(CallbackQueryHandler(back_to_select_server, pattern="^back_to_select_server$"))
-    application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^SERVICE_DETAILS_|SHOW_SUB_LINK_|back_to_main_from_services|back_to_services|OPEN_MY_SERVICES|approve_receipt_|reject_receipt_|REFERRAL_HISTORY_|back_to_referral_link"))
+    application.add_handler(CallbackQueryHandler(back_to_tutorial_categories, pattern="^back_to_tutorial_categories$"))
+    
+    # هندلر جامع برای تمام دکمه‌های شیشه‌ای
+    application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^SERVICE_DETAILS_|SHOW_SUB_LINK_|back_to_main_from_services|back_to_services|OPEN_MY_SERVICES|approve_receipt_|reject_receipt_|REFERRAL_HISTORY_|back_to_referral_link|TUTORIAL_CAT_|TUTORIAL_APP_|back_to_main_from_tutorial"))
     
     application.add_handler(MessageHandler(filters.Regex(r"^👤 حساب من$"), my_account))
     application.add_handler(MessageHandler(filters.Regex(r"^📂 سرویس‌های من$"), my_services))
     application.add_handler(MessageHandler(filters.Regex(r"^🔗 لینک رفرال$"), my_referral))  # هندلر دکمه لینک رفرال
+    application.add_handler(MessageHandler(filters.Regex(r"^📚 آموزش اتصال$"), connection_tutorials_start))  # هندلر دکمه آموزش اتصال
     
     application.add_handler(
         MessageHandler(
