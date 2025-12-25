@@ -8,21 +8,37 @@
 # 6. Moved free trial to services list (not separate button in main menu)
 # 7. Added Referral System with permanent referral IDs and automatic commission
 # 8. Added complete connection tutorial section with Hiddify, V2rayNG, V2Box, etc.
+# 9. Added: New user notification to admin
+# 10. Added: /announce command for broadcasting to all users
+# 11. Added: Restriction - Old users cannot set new referrals
+# 12. Added: User profile links for all user IDs + detailed referral info
+# 13. Added: Admin command /check for viewing user profile details
+# 14. Added: Enhanced /check command with interactive buttons + copyable ID
+# 15. Added: Reply handler for /check command
+# 16. Added: Complete transaction history view
+# 17. Added: Full service details view for admin
+# 18. Added: Edit user information functionality
+# 19. Added: User investigation with comprehensive data
+# 20. Added: User registration by admin
+# 21. Added: Complete referral list with pagination
+# 22. FIXED: Edit user balance, referral, and notes functionality in /check command
 
 import logging
 import requests
 import json
 import os
 import re 
+import asyncio
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ConversationHandler,
-    CallbackQueryHandler, ContextTypes, filters, ApplicationBuilder
+    CallbackQueryHandler, ContextTypes, filters
 )
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, Bot, error
 import uuid 
 import base64 
 import time
 import datetime 
+from typing import Dict, List, Optional, Tuple
 
 # --- تنظیمات لاگ‌گیری ---
 logging.basicConfig(
@@ -46,7 +62,7 @@ SERVERS_CONFIG = {
         "server_address": "server_address",
         "server_port_subscription": 2096,
         "server_port_client": 8080,
-        "base_path": "/login_path",
+        "base_path": "/base_path",
         "subscribe_path": "/subscribe/",
         "active": 1,   # 🌟 1 = قابل خرید | 0 = ظرفیت پر
         "tamdid": 1    # 🌟 1 = قابل تمدید | 0 = تمدید غیرفعال
@@ -91,6 +107,11 @@ STATE_WAITING_FOR_RENEWAL_CONFIRM = 6
 STATE_SELECT_SERVER = 7  
 STATE_SELECT_SERVER_FOR_RENEWAL = 8 
 STATE_WAITING_FOR_RECEIPT = 9  # وضعیت جدید برای دریافت عکس رسید
+STATE_AWAITING_BALANCE_AMOUNT = 10  # وضعیت جدید برای دریافت مبلغ افزایش موجودی
+STATE_AWAITING_CONTACT_MESSAGE = 11  # وضعیت جدید برای دریافت پیام تماس
+STATE_EDIT_USER_BALANCE = 12  # وضعیت جدید برای ویرایش موجودی کاربر
+STATE_EDIT_USER_REFERRAL = 13  # وضعیت جدید برای ویرایش رفرال کاربر
+STATE_EDIT_USER_NOTES = 14  # وضعیت جدید برای ویرایش یادداشت کاربر
 
 # --- فایل‌های ذخیره‌سازی دائمی ---
 PENDING_PAYMENTS_FILE = 'pending_payments.json'
@@ -98,6 +119,7 @@ USERS_FILE = 'users.json'
 PENDING_RECEIPTS_FILE = 'pending_receipts.json'  # فایل جدید برای رسیدهای در انتظار تأیید
 FREE_TRIAL_USERS_FILE = 'free_trial_users.json'  # فایل جدید برای رصد کاربران تست رایگان
 REFERRAL_DATA_FILE = 'referral_data.json'  # فایل جدید برای اطلاعات رفرال
+TRANSACTION_HISTORY_FILE = 'transaction_history.json'  # فایل جدید برای تاریخچه تراکنش‌ها
 
 # --- لیست قیمت نهایی (واحد: تومان) ---
 SERVICES = {
@@ -321,6 +343,21 @@ TUTORIAL_CATEGORIES = {
 # دیکشنری برای نگهداری Cookie هر سرور
 XUI_AUTH_COOKIES = {}
 
+# ============================================================
+# --- توابع کمکی جدید ---
+# ============================================================
+
+def get_user_link(user_id: int) -> str:
+    """ساخت لینک پروفایل کاربر از شناسه"""
+    return f"tg://user?id={user_id}"
+
+def format_user_info(user_id: int, show_copyable: bool = True) -> str:
+    """فرمت کردن اطلاعات کاربر با لینک پروفایل و ID قابل کپی"""
+    if show_copyable:
+        return f"[{user_id}]({get_user_link(user_id)}) (`{user_id}`)"
+    else:
+        return f"[{user_id}]({get_user_link(user_id)})"
+
 # -------------------------
 # Helper to send main menu
 # -------------------------
@@ -338,14 +375,14 @@ def load_users() -> dict:
     if not os.path.exists(USERS_FILE):
         return {}
     try:
-        with open(USERS_FILE, 'r') as f:
+        with open(USERS_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (IOError, json.JSONDecodeError):
         logger.error(f"Error loading {USERS_FILE}. Returning empty dict.")
         return {}
 
 def save_users(users: dict):
-    with open(USERS_FILE, 'w') as f:
+    with open(USERS_FILE, 'w', encoding='utf-8') as f:
         json.dump(users, f, indent=4, ensure_ascii=False)
 
 def get_user_balance(user_id: int) -> float:
@@ -353,7 +390,7 @@ def get_user_balance(user_id: int) -> float:
     str_user_id = str(user_id)
     
     if str_user_id not in users:
-        users[str_user_id] = {"balance": 0.0, "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 0}
+        users[str_user_id] = {"balance": 0.0, "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 0, "notes": "", "created_at": datetime.datetime.now().isoformat()}
         save_users(users)
         return 0.0
     
@@ -364,7 +401,7 @@ def update_user_balance(user_id: int, amount_change: float):
     str_user_id = str(user_id)
     
     if str_user_id not in users:
-        users[str_user_id] = {"balance": 0.0, "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 0}
+        users[str_user_id] = {"balance": 0.0, "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 0, "notes": "", "created_at": datetime.datetime.now().isoformat()}
     
     current_balance = users[str_user_id].get("balance", 0.0)
     new_balance = current_balance + amount_change
@@ -379,7 +416,7 @@ def add_user_service(user_id: int, config_name: str, sub_link: str, uuid: str, i
     str_user_id = str(user_id)
     
     if str_user_id not in users or 'services' not in users[str_user_id]:
-        users[str_user_id] = {"balance": users.get(str_user_id, {}).get("balance", 0.0), "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 0}
+        users[str_user_id] = {"balance": users.get(str_user_id, {}).get("balance", 0.0), "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 0, "notes": "", "created_at": datetime.datetime.now().isoformat()}
     
     if not any(s['config_name'] == config_name for s in users[str_user_id]['services']):
         users[str_user_id]['services'].append({
@@ -409,6 +446,82 @@ def update_user_service_key(user_id: int, config_name: str, new_key: str, new_va
                 return True
     return False
 
+def update_user_notes(user_id: int, notes: str) -> bool:
+    """به‌روزرسانی یادداشت‌های کاربر"""
+    users = load_users()
+    str_user_id = str(user_id)
+    
+    if str_user_id in users:
+        users[str_user_id]["notes"] = notes
+        save_users(users)
+        return True
+    return False
+
+def get_user_notes(user_id: int) -> str:
+    """دریافت یادداشت‌های کاربر"""
+    users = load_users()
+    str_user_id = str(user_id)
+    
+    if str_user_id in users:
+        return users[str_user_id].get("notes", "")
+    return ""
+
+# ============================================================
+# --- توابع مدیریت تاریخچه تراکنش‌ها ---
+# ============================================================
+
+def load_transaction_history() -> dict:
+    """بارگذاری تاریخچه تراکنش‌ها"""
+    if not os.path.exists(TRANSACTION_HISTORY_FILE):
+        return {}
+    try:
+        with open(TRANSACTION_HISTORY_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (IOError, json.JSONDecodeError):
+        return {}
+
+def save_transaction_history(history: dict):
+    """ذخیره تاریخچه تراکنش‌ها"""
+    with open(TRANSACTION_HISTORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(history, f, indent=4, ensure_ascii=False)
+
+def add_transaction(user_id: int, transaction_type: str, amount: float, description: str = "", admin_id: int = None) -> str:
+    """افزودن تراکنش جدید به تاریخچه"""
+    history = load_transaction_history()
+    str_user_id = str(user_id)
+    
+    if str_user_id not in history:
+        history[str_user_id] = []
+    
+    transaction_id = str(int(time.time() * 1000))
+    
+    transaction = {
+        'id': transaction_id,
+        'type': transaction_type,  # 'deposit', 'withdrawal', 'purchase', 'renewal', 'referral_earning', 'admin_adjustment'
+        'amount': amount,
+        'description': description,
+        'timestamp': datetime.datetime.now().isoformat(),
+        'admin_id': admin_id
+    }
+    
+    history[str_user_id].append(transaction)
+    
+    # فقط 100 تراکنش آخر رو نگه دار
+    if len(history[str_user_id]) > 100:
+        history[str_user_id] = history[str_user_id][-100:]
+    
+    save_transaction_history(history)
+    return transaction_id
+
+def get_user_transactions(user_id: int, limit: int = 50) -> list:
+    """دریافت تاریخچه تراکنش‌های کاربر"""
+    history = load_transaction_history()
+    str_user_id = str(user_id)
+    
+    if str_user_id in history:
+        return history[str_user_id][-limit:] if limit > 0 else history[str_user_id]
+    return []
+
 # ============================================================
 # --- توابع مدیریت کاربران تست رایگان ---
 # ============================================================
@@ -418,14 +531,14 @@ def load_free_trial_users() -> dict:
     if not os.path.exists(FREE_TRIAL_USERS_FILE):
         return {}
     try:
-        with open(FREE_TRIAL_USERS_FILE, 'r') as f:
+        with open(FREE_TRIAL_USERS_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (IOError, json.JSONDecodeError):
         return {}
 
 def save_free_trial_users(users: dict):
     """ذخیره لیست کاربران تست رایگان"""
-    with open(FREE_TRIAL_USERS_FILE, 'w') as f:
+    with open(FREE_TRIAL_USERS_FILE, 'w', encoding='utf-8') as f:
         json.dump(users, f, indent=4, ensure_ascii=False)
 
 def has_user_used_free_trial(user_id: int) -> bool:
@@ -451,14 +564,14 @@ def load_pending_receipts() -> dict:
     if not os.path.exists(PENDING_RECEIPTS_FILE):
         return {}
     try:
-        with open(PENDING_RECEIPTS_FILE, 'r') as f:
+        with open(PENDING_RECEIPTS_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (IOError, json.JSONDecodeError):
         return {}
 
 def save_pending_receipts(receipts: dict):
     """ذخیره لیست رسیدهای در انتظار تأیید"""
-    with open(PENDING_RECEIPTS_FILE, 'w') as f:
+    with open(PENDING_RECEIPTS_FILE, 'w', encoding='utf-8') as f:
         json.dump(receipts, f, indent=4, ensure_ascii=False)
 
 def add_pending_receipt(user_id: int, amount_toman: int, receipt_file_id: str, message_to_admin_id: int = None):
@@ -504,14 +617,14 @@ def load_referral_data() -> dict:
     if not os.path.exists(REFERRAL_DATA_FILE):
         return {"referrals": {}, "earnings_history": {}}
     try:
-        with open(REFERRAL_DATA_FILE, 'r') as f:
+        with open(REFERRAL_DATA_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (IOError, json.JSONDecodeError):
         return {"referrals": {}, "earnings_history": {}}
 
 def save_referral_data(data: dict):
     """ذخیره اطلاعات رفرال"""
-    with open(REFERRAL_DATA_FILE, 'w') as f:
+    with open(REFERRAL_DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 def get_user_referral_info(user_id: int) -> dict:
@@ -520,7 +633,7 @@ def get_user_referral_info(user_id: int) -> dict:
     str_user_id = str(user_id)
     
     if str_user_id not in users:
-        users[str_user_id] = {"balance": 0.0, "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 0}
+        users[str_user_id] = {"balance": 0.0, "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 0, "notes": "", "created_at": datetime.datetime.now().isoformat()}
         save_users(users)
     
     return {
@@ -530,13 +643,14 @@ def get_user_referral_info(user_id: int) -> dict:
     }
 
 def set_user_referral(user_id: int, referred_by: int) -> bool:
-    """تنظیم رفرال برای کاربر (فقط اگر قبلاً تنظیم نشده باشد)"""
+    """تنظیم رفرال برای کاربر (فقط اگر قبلاً تنظیم نشده باشد و کاربر جدید باشد)"""
     users = load_users()
     str_user_id = str(user_id)
     str_referred_by = str(referred_by)
     
-    # اگر کاربر قبلاً رفرال داشته باشد، نمی‌توان آن را تغییر داد
-    if str_user_id in users and users[str_user_id].get("referral_by") is not None:
+    # اگر کاربر از قبل در سیستم وجود داشته باشد (قدیمی باشد)، اجازه تنظیم رفرال جدید را نده
+    if str_user_id in users:
+        logger.info(f"User {user_id} already exists in system, cannot set new referral.")
         return False
     
     # اگر کاربر سعی کند خودش را رفرال کند
@@ -544,16 +658,13 @@ def set_user_referral(user_id: int, referred_by: int) -> bool:
         return False
     
     # تنظیم رفرال
-    if str_user_id not in users:
-        users[str_user_id] = {"balance": 0.0, "services": [], "referral_by": referred_by, "referral_earnings": 0.0, "referrals_count": 0}
-    else:
-        users[str_user_id]["referral_by"] = referred_by
+    users[str_user_id] = {"balance": 0.0, "services": [], "referral_by": referred_by, "referral_earnings": 0.0, "referrals_count": 0, "notes": "", "created_at": datetime.datetime.now().isoformat()}
     
     # افزایش تعداد رفرال‌های رفرال دهنده
     if str_referred_by in users:
         users[str_referred_by]["referrals_count"] = users[str_referred_by].get("referrals_count", 0) + 1
     else:
-        users[str_referred_by] = {"balance": 0.0, "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 1}
+        users[str_referred_by] = {"balance": 0.0, "services": [], "referral_by": None, "referral_earnings": 0.0, "referrals_count": 1, "notes": "", "created_at": datetime.datetime.now().isoformat()}
     
     save_users(users)
     
@@ -572,17 +683,17 @@ def set_user_referral(user_id: int, referred_by: int) -> bool:
     logger.info(f"User {user_id} referred by {referred_by}")
     return True
 
-def add_referral_earning(referred_user_id: int, amount_toman: int) -> float:
-    """اضافه کردن درآمد رفرال به حساب رفرال دهنده"""
+def add_referral_earning(referred_user_id: int, amount_toman: int) -> tuple[float, int]:
+    """اضافه کردن درآمد رفرال به حساب رفرال دهنده و برگرداندن اطلاعات رفرال دهنده"""
     users = load_users()
     str_referred_user_id = str(referred_user_id)
     
     if str_referred_user_id not in users:
-        return 0.0
+        return 0.0, None
     
     referred_by = users[str_referred_user_id].get("referral_by")
     if referred_by is None:
-        return 0.0
+        return 0.0, None
     
     str_referred_by = str(referred_by)
     
@@ -603,7 +714,9 @@ def add_referral_earning(referred_user_id: int, amount_toman: int) -> float:
             "services": [],
             "referral_by": None,
             "referral_earnings": referral_earning,
-            "referrals_count": 1
+            "referrals_count": 1,
+            "notes": "",
+            "created_at": datetime.datetime.now().isoformat()
         }
     
     save_users(users)
@@ -625,8 +738,12 @@ def add_referral_earning(referred_user_id: int, amount_toman: int) -> float:
     })
     
     save_referral_data(referral_data)
+    
+    # اضافه کردن تراکنش به تاریخچه
+    add_transaction(referred_by, "referral_earning", referral_earning, f"کمیسیون رفرال از کاربر {referred_user_id}")
+    
     logger.info(f"Added {referral_earning} تومان referral earning to user {referred_by} from user {referred_user_id}")
-    return referral_earning
+    return referral_earning, referred_by
 
 def get_referral_history(referrer_id: int) -> list:
     """دریافت تاریخچه رفرال‌های یک کاربر"""
@@ -645,6 +762,914 @@ def get_referral_earnings_history(referrer_id: int) -> list:
     if str_referrer_id in referral_data.get("earnings_history", {}):
         return referral_data["earnings_history"][str_referrer_id]
     return []
+
+# ============================================================
+# --- توابع جدید برای قابلیت‌های ادمین ---
+# ============================================================
+
+async def show_transaction_details(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int, page: int = 1):
+    """نمایش تاریخچه تراکنش‌های کاربر با اطلاعات ادمین - اصلاح شده"""
+    query = update.callback_query
+    await query.answer("در حال دریافت تاریخچه تراکنش‌ها...")
+    
+    # دریافت تراکنش‌ها
+    transactions = get_user_transactions(target_user_id, limit=0)
+    
+    if not transactions:
+        message_text = f"📊 **تاریخچه تراکنش‌های کاربر**\n\n👤 کاربر: {format_user_info(target_user_id)}\n\n❌ هیچ تراکنشی یافت نشد."
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 بازگشت به پروفایل", callback_data=f"refresh_profile_{target_user_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception:
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text=message_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+        return
+    
+    # محاسبه مجموع‌ها
+    total_deposit = sum(t['amount'] for t in transactions if t['type'] in ['deposit', 'admin_adjustment', 'referral_earning'])
+    total_withdrawal = sum(t['amount'] for t in transactions if t['type'] in ['purchase', 'renewal'])
+    net_balance = total_deposit - total_withdrawal
+    
+    # صفحه‌بندی
+    items_per_page = 10
+    total_pages = (len(transactions) + items_per_page - 1) // items_per_page
+    page = max(1, min(page, total_pages))
+    
+    start_idx = (page - 1) * items_per_page
+    end_idx = min(start_idx + items_per_page, len(transactions))
+    
+    # ساخت پیام
+    message_text = f"📊 **تاریخچه تراکنش‌های کاربر**\n\n👤 کاربر: {format_user_info(target_user_id)}\n\n"
+    message_text += f"📈 **آمار کلی:**\n"
+    message_text += f"• مجموع واریزی: {total_deposit:,.0f} تومان\n"
+    message_text += f"• مجموع برداشت: {total_withdrawal:,.0f} تومان\n"
+    message_text += f"• موجودی خالص: {net_balance:,.0f} تومان\n\n"
+    
+    message_text += f"📋 **تراکنش‌ها (صفحه {page} از {total_pages}):**\n"
+    
+    # نمایش تراکنش‌های صفحه جاری
+    for i, trans in enumerate(transactions[start_idx:end_idx], start_idx + 1):
+        try:
+            date = datetime.datetime.fromisoformat(trans['timestamp']).strftime("%Y/%m/%d %H:%M")
+        except:
+            date = trans['timestamp']
+        
+        # تعیین نوع تراکنش
+        type_emoji = {
+            'deposit': '💰',
+            'withdrawal': '💸',
+            'purchase': '🛍️',
+            'renewal': '🔁',
+            'referral_earning': '🎁',
+            'admin_adjustment': '👑'
+        }.get(trans['type'], '📝')
+        
+        type_name = {
+            'deposit': 'واریز',
+            'withdrawal': 'برداشت',
+            'purchase': 'خرید سرویس',
+            'renewal': 'تمدید سرویس',
+            'referral_earning': 'درآمد رفرال',
+            'admin_adjustment': 'تغییر توسط ادمین'
+        }.get(trans['type'], trans['type'])
+        
+        description = trans.get('description', '')
+        admin_id = trans.get('admin_id')
+        
+        description_lines = []
+        if description:
+            description_lines.append(f"   ↳ {description}")
+        
+        # اضافه کردن اطلاعات ادمین اگر وجود دارد
+        if admin_id:
+            admin_link = format_user_info(admin_id, show_copyable=False)
+            description_lines.append(f"   ↳ توسط ادمین: {admin_link}")
+        
+        description_text = "\n".join(description_lines) if description_lines else ""
+        
+        message_text += f"{i}. {type_emoji} **{type_name}** - {trans['amount']:,.0f} تومان ({date}){description_text}\n"
+    
+    # دکمه‌های صفحه‌بندی
+    keyboard = []
+    
+    # دکمه‌های صفحه‌بندی
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("◀️ صفحه قبلی", callback_data=f"transaction_details_{target_user_id}_{page-1}"))
+    
+    nav_buttons.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data=f"transaction_page_info"))
+    
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("صفحه بعدی ▶️", callback_data=f"transaction_details_{target_user_id}_{page+1}"))
+    
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت به پروفایل", callback_data=f"refresh_profile_{target_user_id}")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Failed to edit transaction message: {e}")
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=message_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+
+async def show_service_details_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int, page: int = 1):
+    """نمایش جزئیات سرویس‌های کاربر برای ادمین"""
+    query = update.callback_query
+    await query.answer("در حال دریافت جزئیات سرویس‌ها...")
+    
+    services = get_user_services(target_user_id)
+    
+    if not services:
+        message_text = f"📂 **سرویس‌های کاربر**\n\n👤 کاربر: {format_user_info(target_user_id)}\n\n❌ هیچ سرویسی یافت نشد."
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 بازگشت به پروفایل", callback_data=f"refresh_profile_{target_user_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception:
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text=message_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+        return
+    
+    # صفحه‌بندی
+    items_per_page = 5
+    total_pages = (len(services) + items_per_page - 1) // items_per_page
+    page = max(1, min(page, total_pages))
+    
+    start_idx = (page - 1) * items_per_page
+    end_idx = min(start_idx + items_per_page, len(services))
+    
+    # ساخت پیام
+    message_text = f"📂 **سرویس‌های کاربر**\n\n👤 کاربر: {format_user_info(target_user_id)}\n"
+    message_text += f"📊 تعداد سرویس‌ها: {len(services)} عدد\n\n"
+    
+    message_text += f"📋 **لیست سرویس‌ها (صفحه {page} از {total_pages}):**\n"
+    
+    # نمایش سرویس‌های صفحه جاری
+    for i, service in enumerate(services[start_idx:end_idx], start_idx + 1):
+        config_name = service.get('config_name', 'نامشخص')
+        server_key = service.get('server_key', 'نامشخص')
+        server_name = SERVERS_CONFIG.get(server_key, {}).get('display_name', server_key)
+        internal_key = service.get('internal_key', 'نامشخص')
+        service_type = SERVICES.get(internal_key, {}).get('label', internal_key)
+        purchase_date = service.get('purchase_date', 'نامشخص')
+        
+        try:
+            purchase_date_formatted = datetime.datetime.fromisoformat(purchase_date).strftime("%Y/%m/%d")
+        except:
+            purchase_date_formatted = purchase_date
+        
+        message_text += f"\n{i}. **{config_name}**\n"
+        message_text += f"   ├─ نوع: {service_type}\n"
+        message_text += f"   ├─ سرور: {server_name}\n"
+        message_text += f"   └─ تاریخ خرید: {purchase_date_formatted}\n"
+        
+        # دریافت اطلاعات از سرور
+        client_index, client_data = await xui_get_client_info_by_name(server_key, config_name)
+        if client_data:
+            total_bytes = client_data.get('totalGB', 0)
+            used_bytes = client_data.get('up', 0) + client_data.get('down', 0)
+            remaining_bytes = total_bytes - used_bytes
+            expiry_ms = client_data.get('expiryTime', 0)
+            
+            total_display = convert_bytes_to_display(total_bytes)
+            used_display = convert_bytes_to_display(used_bytes)
+            remaining_display = convert_bytes_to_display(remaining_bytes)
+            
+            expiry_date_str = "نامحدود"
+            if expiry_ms > 0:
+                expiry_date = datetime.datetime.fromtimestamp(expiry_ms / 1000)
+                expiry_date_str = expiry_date.strftime("%Y/%m/%d")
+            
+            message_text += f"   ├─ ترافیک: {remaining_display} از {total_display}\n"
+            message_text += f"   └─ انقضا: {expiry_date_str}\n"
+    
+    # دکمه‌های صفحه‌بندی
+    keyboard = []
+    
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("◀️ صفحه قبلی", callback_data=f"service_details_{target_user_id}_{page-1}"))
+    
+    nav_buttons.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data=f"service_page_info"))
+    
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("صفحه بعدی ▶️", callback_data=f"service_details_{target_user_id}_{page+1}"))
+    
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    
+    # دکمه‌های عملیاتی
+    keyboard.append([
+        InlineKeyboardButton("🔍 بررسی تک‌تک سرویس‌ها", callback_data=f"check_each_service_{target_user_id}"),
+        InlineKeyboardButton("🗑️ حذف سرویس‌ها", callback_data=f"delete_services_{target_user_id}")
+    ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت به پروفایل", callback_data=f"refresh_profile_{target_user_id}")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Failed to edit service details message: {e}")
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=message_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+
+async def edit_user_info_start(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int):
+    """شروع فرآیند ویرایش اطلاعات کاربر"""
+    query = update.callback_query
+    await query.answer("شروع ویرایش اطلاعات کاربر...")
+    
+    users = load_users()
+    str_target_user_id = str(target_user_id)
+    
+    if str_target_user_id not in users:
+        await query.answer("❌ کاربر در سیستم وجود ندارد.", show_alert=True)
+        return
+    
+    user_data = users[str_target_user_id]
+    
+    message_text = f"✏️ **ویرایش اطلاعات کاربر**\n\n👤 کاربر: {format_user_info(target_user_id)}\n\n"
+    message_text += f"💰 موجودی فعلی: {user_data.get('balance', 0):,.0f} تومان\n"
+    message_text += f"🔗 رفرال دهنده: {user_data.get('referral_by', 'ندارد')}\n"
+    message_text += f"📝 یادداشت: {user_data.get('notes', 'ندارد')}\n\n"
+    message_text += "لطفاً گزینه مورد نظر برای ویرایش را انتخاب کنید:"
+    
+    keyboard = [
+        [InlineKeyboardButton("💰 ویرایش موجودی", callback_data=f"edit_balance_{target_user_id}")],
+        [InlineKeyboardButton("🔗 ویرایش رفرال دهنده", callback_data=f"edit_referral_{target_user_id}")],
+        [InlineKeyboardButton("📝 ویرایش یادداشت", callback_data=f"edit_notes_{target_user_id}")],
+        [InlineKeyboardButton("🔙 بازگشت به پروفایل", callback_data=f"refresh_profile_{target_user_id}")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception:
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=message_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+
+async def edit_user_balance_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """شروع ویرایش موجودی کاربر"""
+    query = update.callback_query
+    await query.answer()
+    
+    target_user_id = int(query.data.split("edit_balance_")[1])
+    context.user_data['edit_balance_target'] = target_user_id
+    
+    await query.edit_message_text(
+        f"💰 **ویرایش موجودی کاربر**\n\n👤 کاربر: {format_user_info(target_user_id)}\n\n"
+        f"لطفاً موجودی جدید را به تومان وارد کنید:\n"
+        f"مثال: 50000",
+        parse_mode="Markdown"
+    )
+
+async def edit_user_referral_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """شروع ویرایش رفرال دهنده کاربر"""
+    query = update.callback_query
+    await query.answer()
+    
+    target_user_id = int(query.data.split("edit_referral_")[1])
+    context.user_data['edit_referral_target'] = target_user_id
+    
+    await query.edit_message_text(
+        f"🔗 **ویرایش رفرال دهنده کاربر**\n\n👤 کاربر: {format_user_info(target_user_id)}\n\n"
+        f"لطفاً شناسه کاربری رفرال دهنده جدید را وارد کنید:\n"
+        f"مثال: 123456789\n\n"
+        f"اگر می‌خواهید رفرال دهنده حذف شود، عدد 0 را وارد کنید.",
+        parse_mode="Markdown"
+    )
+
+async def edit_user_notes_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """شروع ویرایش یادداشت کاربر"""
+    query = update.callback_query
+    await query.answer()
+    
+    target_user_id = int(query.data.split("edit_notes_")[1])
+    context.user_data['edit_notes_target'] = target_user_id
+    
+    await query.edit_message_text(
+        f"📝 **ویرایش یادداشت کاربر**\n\n👤 کاربر: {format_user_info(target_user_id)}\n\n"
+        f"لطفاً یادداشت جدید را وارد کنید:",
+        parse_mode="Markdown"
+    )
+
+async def handle_admin_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """هندلر یکپارچه برای دریافت ورودی‌های ویرایش ادمین"""
+    if update.effective_user.id not in ADMIN_CHAT_IDS:
+        return
+    
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    
+    # بررسی اینکه آیا در حال ویرایش موجودی هستیم
+    if 'edit_balance_target' in context.user_data:
+        target_user_id = context.user_data['edit_balance_target']
+        
+        try:
+            new_balance = float(text.replace(',', ''))
+            if new_balance < 0:
+                await update.message.reply_text("❌ موجودی نمی‌تواند منفی باشد.")
+                return
+        except ValueError:
+            await update.message.reply_text("❌ لطفاً یک عدد معتبر وارد کنید.")
+            return
+        
+        # به‌روزرسانی موجودی
+        users = load_users()
+        str_target_user_id = str(target_user_id)
+        
+        if str_target_user_id in users:
+            old_balance = users[str_target_user_id].get("balance", 0)
+            users[str_target_user_id]["balance"] = new_balance
+            save_users(users)
+            
+            # افزودن به تاریخچه تراکنش‌ها
+            amount_change = new_balance - old_balance
+            if amount_change != 0:
+                transaction_type = "admin_adjustment"
+                add_transaction(target_user_id, transaction_type, amount_change, 
+                               f"تغییر موجودی توسط ادمین (قدیمی: {old_balance:,.0f} تومان)", update.effective_user.id)
+            
+            await update.message.reply_text(
+                f"✅ موجودی کاربر {format_user_info(target_user_id)} به {new_balance:,.0f} تومان تغییر یافت.\n\n"
+                f"تغییر: {amount_change:+,.0f} تومان",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(f"❌ کاربر {target_user_id} پیدا نشد.")
+        
+        # پاک کردن وضعیت
+        context.user_data.pop('edit_balance_target', None)
+    
+    # بررسی اینکه آیا در حال ویرایش رفرال هستیم
+    elif 'edit_referral_target' in context.user_data:
+        target_user_id = context.user_data['edit_referral_target']
+        input_text = text
+        
+        try:
+            if input_text == "0":
+                referred_by = None
+            else:
+                referred_by = int(input_text)
+                
+                # بررسی اینکه کاربر نمی‌تواند خودش را رفرال دهد
+                if referred_by == target_user_id:
+                    await update.message.reply_text("❌ کاربر نمی‌تواند خودش را رفرال دهد.")
+                    return
+                    
+        except ValueError:
+            await update.message.reply_text("❌ لطفاً یک عدد معتبر وارد کنید یا 0 برای حذف رفرال.")
+            return
+        
+        # به‌روزرسانی رفرال
+        users = load_users()
+        str_target_user_id = str(target_user_id)
+        
+        if str_target_user_id in users:
+            old_referral = users[str_target_user_id].get("referral_by")
+            users[str_target_user_id]["referral_by"] = referred_by
+            
+            # اگر رفرال دهنده تغییر کرد، آمار رفرال‌ها را به‌روزرسانی کن
+            if old_referral != referred_by:
+                # کاهش تعداد رفرال‌های رفرال دهنده قدیمی
+                if old_referral:
+                    str_old_referral = str(old_referral)
+                    if str_old_referral in users:
+                        users[str_old_referral]["referrals_count"] = max(0, users[str_old_referral].get("referrals_count", 1) - 1)
+                
+                # افزایش تعداد رفرال‌های رفرال دهنده جدید
+                if referred_by:
+                    str_referred_by = str(referred_by)
+                    if str_referred_by in users:
+                        users[str_referred_by]["referrals_count"] = users[str_referred_by].get("referrals_count", 0) + 1
+                    else:
+                        # اگر رفرال دهنده جدید در سیستم نیست، او را ثبت کن
+                        users[str_referred_by] = {
+                            "balance": 0.0,
+                            "services": [],
+                            "referral_by": None,
+                            "referral_earnings": 0.0,
+                            "referrals_count": 1,
+                            "notes": "",
+                            "created_at": datetime.datetime.now().isoformat()
+                        }
+            
+            save_users(users)
+            
+            # افزودن به تاریخچه تراکنش‌ها
+            admin_info = format_user_info(update.effective_user.id, show_copyable=False)
+            description = f"تغییر رفرال توسط ادمین {admin_info} (قدیمی: {old_referral if old_referral else 'ندارد'})"
+            add_transaction(target_user_id, "admin_adjustment", 0, description, update.effective_user.id)
+            
+            await update.message.reply_text(
+                f"✅ رفرال دهنده کاربر {format_user_info(target_user_id)} به {referred_by if referred_by else 'هیچ‌کس'} تغییر یافت.\n\n"
+                f"توسط ادمین: {admin_info}",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(f"❌ کاربر {target_user_id} پیدا نشد.")
+        
+        # پاک کردن وضعیت
+        context.user_data.pop('edit_referral_target', None)
+    
+    # بررسی اینکه آیا در حال ویرایش یادداشت هستیم
+    elif 'edit_notes_target' in context.user_data:
+        target_user_id = context.user_data['edit_notes_target']
+        new_notes = text
+        
+        # به‌روزرسانی یادداشت
+        if update_user_notes(target_user_id, new_notes):
+            # افزودن به تاریخچه تراکنش‌ها
+            admin_info = format_user_info(update.effective_user.id, show_copyable=False)
+            description = f"ویرایش یادداشت توسط ادمین {admin_info}"
+            add_transaction(target_user_id, "admin_adjustment", 0, description, update.effective_user.id)
+            
+            await update.message.reply_text(
+                f"✅ یادداشت کاربر {format_user_info(target_user_id)} به‌روزرسانی شد.\n\n"
+                f"📝 یادداشت جدید: {new_notes}\n"
+                f"توسط ادمین: {admin_info}",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(f"❌ کاربر {target_user_id} پیدا نشد.")
+        
+        # پاک کردن وضعیت
+        context.user_data.pop('edit_notes_target', None)
+    
+    # اگر هیچ‌کدام از حالت‌های ویرایش فعال نیست
+    else:
+        # بررسی سایر حالت‌های ادمین
+        if 'awaiting_amount_for' in context.user_data:
+            target_user_id = context.user_data['awaiting_amount_for']
+            
+            try:
+                amount = float(text.replace(',', ''))
+                if amount <= 0:
+                    await update.message.reply_text("❌ مبلغ باید بزرگتر از صفر باشد.")
+                    return
+            except ValueError:
+                await update.message.reply_text("❌ لطفاً یک عدد معتبر وارد کنید.")
+                return
+            
+            # افزایش موجودی
+            new_balance = update_user_balance(target_user_id, amount)
+            
+            # افزودن به تاریخچه تراکنش‌ها
+            add_transaction(target_user_id, "admin_adjustment", amount, f"افزایش موجودی توسط ادمین", update.effective_user.id)
+            
+            # اطلاع به ادمین
+            await update.message.reply_text(
+                f"✅ موجودی کاربر {format_user_info(target_user_id)} به میزان {amount:,.0f} تومان افزایش یافت.\n\n"
+                f"💰 موجودی جدید: {new_balance:,.0f} تومان",
+                parse_mode="Markdown"
+            )
+            
+            # اطلاع به کاربر
+            try:
+                await context.bot.send_message(
+                    chat_id=target_user_id,
+                    text=f"💰 موجودی کیف پول شما توسط مدیریت به میزان {amount:,.0f} تومان افزایش یافت.\n\n"
+                         f"💳 موجودی جدید: {new_balance:,.0f} تومان",
+                    reply_markup=MAIN_MENU_REPLY_MARKUP
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify user {target_user_id}: {e}")
+            
+            # پاک کردن وضعیت
+            context.user_data.pop('awaiting_amount_for', None)
+        
+        elif 'awaiting_message_for' in context.user_data:
+            target_user_id = context.user_data['awaiting_message_for']
+            message_text = text
+            
+            if not message_text or len(message_text.strip()) == 0:
+                await update.message.reply_text("❌ پیام نمی‌تواند خالی باشد.")
+                return
+            
+            try:
+                # ارسال پیام به کاربر
+                await context.bot.send_message(
+                    chat_id=target_user_id,
+                    text=f"📨 **پیام از مدیریت:**\n\n{message_text}\n\n"
+                         f"_در صورت نیاز به پاسخ، از دکمه 📞 پشتیبانی استفاده کنید._",
+                    parse_mode="Markdown"
+                )
+                
+                await update.message.reply_text(
+                    f"✅ پیام شما به کاربر {format_user_info(target_user_id)} ارسال شد.",
+                    parse_mode="Markdown"
+                )
+                
+                # ذخیره در تاریخچه
+                if 'admin_messages' not in context.bot_data:
+                    context.bot_data['admin_messages'] = {}
+                
+                timestamp = datetime.datetime.now().isoformat()
+                if str(target_user_id) not in context.bot_data['admin_messages']:
+                    context.bot_data['admin_messages'][str(target_user_id)] = []
+                
+                context.bot_data['admin_messages'][str(target_user_id)].append({
+                    'from_admin': update.effective_user.id,
+                    'message': message_text,
+                    'timestamp': timestamp
+                })
+                
+            except error.Forbidden:
+                await update.message.reply_text(
+                    f"❌ ارسال پیام به کاربر {format_user_info(target_user_id)} ناموفق بود.\n"
+                    f"کاربر ربات را مسدود کرده است.",
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"Failed to send message to user {target_user_id}: {e}")
+                await update.message.reply_text(f"❌ خطا در ارسال پیام: {e}")
+            
+            # پاک کردن وضعیت
+            context.user_data.pop('awaiting_message_for', None)
+
+async def investigate_user_info(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int):
+    """نمایش اطلاعات جامع کاربر"""
+    query = update.callback_query
+    await query.answer("در حال دریافت اطلاعات جامع...")
+    
+    users = load_users()
+    str_target_user_id = str(target_user_id)
+    
+    if str_target_user_id not in users:
+        await query.answer("❌ کاربر در سیستم وجود ندارد.", show_alert=True)
+        return
+    
+    user_data = users[str_target_user_id]
+    
+    # اطلاعات پایه
+    message_text = f"🔍 **بررسی جامع کاربر**\n\n👤 کاربر: {format_user_info(target_user_id)}\n\n"
+    
+    # اطلاعات حساب
+    balance = user_data.get("balance", 0.0)
+    created_at = user_data.get("created_at", "نامشخص")
+    notes = user_data.get("notes", "ندارد")
+    
+    try:
+        created_date = datetime.datetime.fromisoformat(created_at).strftime("%Y/%m/%d %H:%M")
+    except:
+        created_date = created_at
+    
+    message_text += f"📊 **اطلاعات حساب:**\n"
+    message_text += f"💰 موجودی: {balance:,.0f} تومان\n"
+    message_text += f"📅 تاریخ ایجاد: {created_date}\n"
+    message_text += f"📝 یادداشت: {notes}\n\n"
+    
+    # اطلاعات رفرال
+    referral_by = user_data.get("referral_by")
+    referral_earnings = user_data.get("referral_earnings", 0.0)
+    referrals_count = user_data.get("referrals_count", 0)
+    
+    message_text += f"🔗 **اطلاعات رفرال:**\n"
+    if referral_by:
+        message_text += f"• رفرال دهنده: {format_user_info(referral_by, show_copyable=False)}\n"
+    else:
+        message_text += f"• رفرال دهنده: ندارد\n"
+    message_text += f"• کاربران جذب شده: {referrals_count} نفر\n"
+    message_text += f"• درآمد رفرال: {referral_earnings:,.0f} تومان\n\n"
+    
+    # اطلاعات سرویس‌ها
+    services = user_data.get("services", [])
+    message_text += f"📂 **اطلاعات سرویس‌ها:**\n"
+    message_text += f"• تعداد سرویس‌ها: {len(services)} عدد\n"
+    
+    if services:
+        # گروه‌بندی سرویس‌ها بر اساس نوع
+        service_types = {}
+        for service in services:
+            internal_key = service.get('internal_key', 'نامشخص')
+            service_type = SERVICES.get(internal_key, {}).get('label', internal_key)
+            if service_type not in service_types:
+                service_types[service_type] = 0
+            service_types[service_type] += 1
+        
+        message_text += f"• انواع سرویس‌ها:\n"
+        for service_type, count in service_types.items():
+            message_text += f"  - {service_type}: {count} عدد\n"
+    
+    # اطلاعات تراکنش‌ها
+    transactions = get_user_transactions(target_user_id, limit=0)
+    if transactions:
+        total_deposit = sum(t['amount'] for t in transactions if t['type'] in ['deposit', 'admin_adjustment', 'referral_earning'])
+        total_withdrawal = sum(t['amount'] for t in transactions if t['type'] in ['purchase', 'renewal'])
+        
+        message_text += f"\n💳 **اطلاعات مالی:**\n"
+        message_text += f"• تعداد تراکنش‌ها: {len(transactions)} عدد\n"
+        message_text += f"• مجموع واریزی: {total_deposit:,.0f} تومان\n"
+        message_text += f"• مجموع برداشت: {total_withdrawal:,.0f} تومان\n"
+        message_text += f"• موجودی خالص: {balance:,.0f} تومان\n"
+    
+    # اطلاعات تست رایگان
+    if has_user_used_free_trial(target_user_id):
+        free_trial_users = load_free_trial_users()
+        trial_data = free_trial_users.get(str_target_user_id, {})
+        used_date = trial_data.get('used_date', 'نامشخص')
+        
+        try:
+            used_date_formatted = datetime.datetime.fromisoformat(used_date).strftime("%Y/%m/%d")
+        except:
+            used_date_formatted = used_date
+        
+        message_text += f"\n⚠️ **تست رایگان:**\n"
+        message_text += f"• وضعیت: استفاده کرده\n"
+        message_text += f"• تاریخ استفاده: {used_date_formatted}\n"
+    
+    # دکمه‌های عملیاتی
+    keyboard = [
+        [InlineKeyboardButton("📊 تاریخچه تراکنش‌ها", callback_data=f"transaction_details_{target_user_id}_1")],
+        [InlineKeyboardButton("📂 جزئیات سرویس‌ها", callback_data=f"service_details_{target_user_id}_1")],
+        [InlineKeyboardButton("📋 لیست کامل رفرال‌ها", callback_data=f"full_referral_list_{target_user_id}_1")],
+        [InlineKeyboardButton("✏️ ویرایش اطلاعات", callback_data=f"edit_user_{target_user_id}")],
+        [InlineKeyboardButton("🔙 بازگشت به پروفایل", callback_data=f"refresh_profile_{target_user_id}")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception:
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=message_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+
+async def register_user_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int):
+    """ثبت کاربر جدید توسط ادمین"""
+    query = update.callback_query
+    await query.answer("در حال ثبت کاربر...")
+    
+    users = load_users()
+    str_target_user_id = str(target_user_id)
+    
+    if str_target_user_id in users:
+        await query.answer("❌ کاربر قبلاً در سیستم ثبت شده است.", show_alert=True)
+        return
+    
+    # ثبت کاربر جدید
+    users[str_target_user_id] = {
+        "balance": 0.0,
+        "services": [],
+        "referral_by": None,
+        "referral_earnings": 0.0,
+        "referrals_count": 0,
+        "notes": "ثبت شده توسط ادمین",
+        "created_at": datetime.datetime.now().isoformat()
+    }
+    
+    save_users(users)
+    
+    message_text = f"✅ کاربر جدید ثبت شد!\n\n👤 کاربر: {format_user_info(target_user_id)}\n\nاطلاعات:\n"
+    message_text += f"💰 موجودی: 0 تومان\n"
+    message_text += f"📅 تاریخ ثبت: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}\n"
+    message_text += f"📝 وضعیت: فعال\n\n"
+    message_text += f"کاربر می‌تواند از طریق ربات اقدام به خرید سرویس کند."
+    
+    keyboard = [
+        [InlineKeyboardButton("➕ افزایش موجودی", callback_data=f"add_balance_{target_user_id}")],
+        [InlineKeyboardButton("🔍 مشاهده پروفایل", callback_data=f"refresh_profile_{target_user_id}")],
+        [InlineKeyboardButton("🔙 بستن", callback_data="close_profile")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception:
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=message_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+
+async def show_full_referral_list(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int, page: int = 1):
+    """نمایش لیست کامل کاربران جذب شده با صفحه‌بندی"""
+    query = update.callback_query
+    await query.answer("در حال دریافت لیست رفرال‌ها...")
+    
+    referral_history = get_referral_history(target_user_id)
+    
+    if not referral_history:
+        message_text = f"📋 **لیست کاربران جذب شده**\n\n👤 رفرال دهنده: {format_user_info(target_user_id)}\n\n❌ هیچ کاربری جذب نکرده است."
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 بازگشت", callback_data=f"investigate_user_{target_user_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception:
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text=message_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+        return
+    
+    # صفحه‌بندی
+    items_per_page = 20
+    total_pages = (len(referral_history) + items_per_page - 1) // items_per_page
+    page = max(1, min(page, total_pages))
+    
+    start_idx = (page - 1) * items_per_page
+    end_idx = min(start_idx + items_per_page, len(referral_history))
+    
+    # محاسبه آمار
+    total_referrals = len(referral_history)
+    active_referrals = sum(1 for ref in referral_history if ref.get('status') == 'active')
+    
+    # ساخت پیام
+    message_text = f"📋 **لیست کامل کاربران جذب شده**\n\n👤 رفرال دهنده: {format_user_info(target_user_id)}\n\n"
+    message_text += f"📊 **آمار کلی:**\n"
+    message_text += f"• تعداد کل: {total_referrals} نفر\n"
+    message_text += f"• کاربران فعال: {active_referrals} نفر\n\n"
+    
+    message_text += f"👥 **لیست کاربران (صفحه {page} از {total_pages}):**\n"
+    
+    # نمایش کاربران صفحه جاری
+    for i, referral in enumerate(referral_history[start_idx:end_idx], start_idx + 1):
+        ref_user_id = referral.get('user_id')
+        ref_date = datetime.datetime.fromisoformat(referral.get('date')).strftime("%Y/%m/%d")
+        status = referral.get('status', 'active')
+        
+        # دریافت اطلاعات کاربر
+        users_data = load_users()
+        str_ref_user_id = str(ref_user_id)
+        
+        user_info = ""
+        if str_ref_user_id in users_data:
+            user_data = users_data[str_ref_user_id]
+            balance = user_data.get('balance', 0)
+            services_count = len(user_data.get('services', []))
+            user_info = f"💰{balance:,.0f}ت | 📂{services_count}س"
+        
+        status_emoji = "🟢" if status == 'active' else "⚫"
+        message_text += f"{i}. {status_emoji} {format_user_info(ref_user_id, show_copyable=False)} - {ref_date} {user_info}\n"
+    
+    # دکمه‌های صفحه‌بندی
+    keyboard = []
+    
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("◀️ صفحه قبلی", callback_data=f"full_referral_list_{target_user_id}_{page-1}"))
+    
+    nav_buttons.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data=f"referral_page_info"))
+    
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("صفحه بعدی ▶️", callback_data=f"full_referral_list_{target_user_id}_{page+1}"))
+    
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    
+    # دکمه‌های اضافی
+    keyboard.append([
+        InlineKeyboardButton("📊 تاریخچه درآمد رفرال", callback_data=f"referral_earnings_history_{target_user_id}"),
+        InlineKeyboardButton("📥 خروجی Excel", callback_data=f"export_referrals_{target_user_id}")
+    ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت به بررسی", callback_data=f"investigate_user_{target_user_id}")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Failed to edit referral list message: {e}")
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=message_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+
+async def referral_earnings_history_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int, page: int = 1):
+    """نمایش تاریخچه درآمدهای رفرال برای ادمین"""
+    query = update.callback_query
+    await query.answer("در حال دریافت تاریخچه درآمدها...")
+    
+    earnings_history = get_referral_earnings_history(target_user_id)
+    
+    if not earnings_history:
+        message_text = f"💰 **تاریخچه درآمد رفرال**\n\n👤 رفرال دهنده: {format_user_info(target_user_id)}\n\n❌ هیچ درآمد رفرالی نداشته است."
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 بازگشت", callback_data=f"full_referral_list_{target_user_id}_1")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception:
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text=message_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+        return
+    
+    # صفحه‌بندی
+    items_per_page = 15
+    total_pages = (len(earnings_history) + items_per_page - 1) // items_per_page
+    page = max(1, min(page, total_pages))
+    
+    start_idx = (page - 1) * items_per_page
+    end_idx = min(start_idx + items_per_page, len(earnings_history))
+    
+    # محاسبه مجموع
+    total_earnings = sum(item['amount'] for item in earnings_history)
+    
+    # ساخت پیام
+    message_text = f"💰 **تاریخچه درآمد رفرال**\n\n👤 رفرال دهنده: {format_user_info(target_user_id)}\n\n"
+    message_text += f"📊 **آمار کلی:**\n"
+    message_text += f"• تعداد تراکنش: {len(earnings_history)} عدد\n"
+    message_text += f"• مجموع درآمد: {total_earnings:,.0f} تومان\n"
+    message_text += f"• درصد رفرال: {REFERRAL_PERCENT}%\n\n"
+    
+    message_text += f"📈 **تراکنش‌ها (صفحه {page} از {total_pages}):**\n"
+    
+    # نمایش تراکنش‌های صفحه جاری
+    for i, earning in enumerate(earnings_history[start_idx:end_idx], start_idx + 1):
+        date = datetime.datetime.fromisoformat(earning['date']).strftime("%Y/%m/%d")
+        from_user_link = format_user_info(earning['from_user'], show_copyable=False)
+        original_amount = earning.get('original_amount', 0)
+        
+        message_text += f"{i}. از {from_user_link}\n"
+        message_text += f"   ├─ مبلغ اصلی: {original_amount:,.0f} تومان\n"
+        message_text += f"   ├─ پورسانت: {earning['amount']:,.0f} تومان\n"
+        message_text += f"   └─ تاریخ: {date}\n"
+    
+    # دکمه‌های صفحه‌بندی
+    keyboard = []
+    
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("◀️ صفحه قبلی", callback_data=f"referral_earnings_history_{target_user_id}_{page-1}"))
+    
+    nav_buttons.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data=f"earnings_page_info"))
+    
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("صفحه بعدی ▶️", callback_data=f"referral_earnings_history_{target_user_id}_{page+1}"))
+    
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت به لیست رفرال‌ها", callback_data=f"full_referral_list_{target_user_id}_1")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception:
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=message_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
 
 # ============================================================
 # --- توابع API پنل X-UI (سیستم چند سروره) ---
@@ -1012,8 +2037,14 @@ def convert_bytes_to_display(bytes_val: int) -> str:
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """هندلر دستور /start با پشتیبانی از رفرال"""
+    """هندلر دستور /start با پشتیبانی از رفرال و اطلاع به ادمین"""
     user = update.effective_user
+    user_id = user.id
+    users = load_users()
+    str_user_id = str(user_id)
+    
+    # بررسی آیا کاربر جدید است یا قدیمی
+    is_new_user = str_user_id not in users
     
     # بررسی پارامترهای لینک برای رفرال
     args = context.args
@@ -1037,16 +2068,52 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             except ValueError:
                 referral_id = None
     
-    # تنظیم رفرال برای کاربر اگر وجود داشته باشد
-    if referral_id:
-        success = set_user_referral(user.id, referral_id)
+    # تنظیم رفرال برای کاربر اگر وجود داشته باشد و کاربر جدید باشد
+    if referral_id and is_new_user:
+        success = set_user_referral(user_id, referral_id)
         if success:
-            logger.info(f"User {user.id} registered with referral from {referral_id}")
+            logger.info(f"User {user_id} registered with referral from {referral_id}")
+    
+    # اگر کاربر جدید است، اطلاع به ادمین‌ها
+    if is_new_user:
+        # ذخیره کاربر در دیتابیس (اگر قبلاً وجود نداشته)
+        if str_user_id not in users:
+            users[str_user_id] = {"balance": 0.0, "services": [], "referral_by": referral_id, "referral_earnings": 0.0, "referrals_count": 0, "join_date": datetime.datetime.now().isoformat(), "notes": "", "created_at": datetime.datetime.now().isoformat()}
+            save_users(users)
+        
+        # ارسال اطلاع به ادمین‌ها
+        join_date = datetime.datetime.now().strftime("%Y/%m/%d - %H:%M:%S")
+        referral_info = ""
+        if referral_id:
+            referral_info = f"✅ توسط {format_user_info(referral_id, show_copyable=False)}"
+        else:
+            referral_info = "❌ ندارد"
+        
+        admin_message = (
+            f"👤 کاربر جدید وارد ربات شد!\n\n"
+            f"🆔 شناسه کاربر: {format_user_info(user_id)}\n"
+            f"👤 نام: {user.first_name} {user.last_name or ''}\n"
+            f"📅 تاریخ عضویت: {join_date}\n"
+            f"🔗 رفرال: {referral_info}"
+        )
+        
+        for admin_id in ADMIN_CHAT_IDS:
+            try:
+                await context.bot.send_message(admin_id, admin_message, parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"Failed to send new user notification to admin {admin_id}: {e}")
     
     # پیام خوش‌آمدگویی
+    welcome_message = f"سلام {user.first_name}،\nلطفاً یک گزینه را از منوی زیر انتخاب کنید:"
+    
+    # اگر کاربر توسط رفرال آمده، پیام اضافی
+    if referral_id:
+        welcome_message += f"\n\n✅ شما توسط {format_user_info(referral_id, show_copyable=False)} به ربات دعوت شده‌اید!"
+    
     await update.message.reply_text(
-        f"سلام {user.first_name}،\nلطفاً یک گزینه را از منوی زیر انتخاب کنید:",
-        reply_markup=MAIN_MENU_REPLY_MARKUP
+        welcome_message,
+        reply_markup=MAIN_MENU_REPLY_MARKUP,
+        parse_mode="Markdown"
     )
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1086,14 +2153,14 @@ async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     
     message_text = (
         f"**👤 جزئیات حساب کاربری**\n\n"
-        f"🔹 **شناسه کاربری (ID):** `{user_id}`\n"
+        f"🔹 **شناسه کاربری (ID):** {format_user_info(user_id)}\n"
         f"🔹 **موجودی کیف پول:** **{balance:,.0f}** تومان\n"
         f"🔹 **تعداد سرویس فعال:** **{num_services}** عدد\n"
     )
     
     # اضافه کردن اطلاعات رفرال
     if referral_by:
-        message_text += f"🔹 **رفرال دهنده:** `{referral_by}`\n"
+        message_text += f"🔹 **رفرال دهنده:** {format_user_info(referral_by, show_copyable=False)}\n"
     
     message_text += (
         f"🔹 **تعداد کاربران رفرال:** **{referrals_count}** نفر\n"
@@ -1117,26 +2184,47 @@ async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     # دریافت اطلاعات رفرال
     referral_info = get_user_referral_info(user_id)
+    referral_by = referral_info.get("referral_by")
     referral_earnings = referral_info.get("referral_earnings", 0.0)
     referrals_count = referral_info.get("referrals_count", 0)
+    
+    # دریافت لیست کاربران رفرال شده
+    referral_history = get_referral_history(user_id)
     
     message_text = (
         f"**🔗 لینک رفرال شما**\n\n"
         f"لینک اختصاصی شما:\n`{ref_link}`\n\n"
-        f"**📊 آمار رفرال شما:**\n"
+        f"📊 آمار رفرال شما:**\n"
         f"🔸 تعداد کاربران جذب شده: **{referrals_count}** نفر\n"
         f"🔸 مجموع درآمد رفرال: **{referral_earnings:,.0f}** تومان\n"
-        f"🔸 درصد رفرال: **{REFERRAL_PERCENT}%**\n\n"
-        f"**📝 نحوه کار:**\n"
-        f"1. لینک بالا را برای دوستان خود ارسال کنید\n"
-        f"2. دوستان شما با کلیک روی لینک وارد ربات می‌شوند\n"
-        f"3. رفرال شما برای همیشه در پروفایلشان ثبت می‌شود\n"
-        f"4. از هر شارژی که انجام دهند، **{REFERRAL_PERCENT}%** به حساب شما اضافه می‌شود\n\n"
-        f"**⚠️ توجه:**\n"
-        f"• رفرال هر کاربر فقط یک بار و در اولین ورود ثبت می‌شود\n"
-        f"• مبلغ شارژ باید حداقل **{REFERRAL_MIN_AMOUNT:,}** تومان باشد تا رفرال محاسبه شود\n"
-        f"• رفرال پس از تأیید رسید شارژ توسط ادمین به حساب شما واریز می‌شود"
+        f"🔸 درصد رفرال: **{REFERRAL_PERCENT}%**\n"
     )
+    
+    # نمایش رفرال دهنده (اگر دارد)
+    if referral_by:
+        message_text += f"🔸 رفرال دهنده شما: {format_user_info(referral_by, show_copyable=False)}\n"
+    
+    message_text += "\n**📝 نحوه کار:**\n"
+    message_text += "1. لینک بالا را برای دوستان خود ارسال کنید\n"
+    message_text += "2. دوستان شما با کلیک روی لینک وارد ربات می‌شوند\n"
+    message_text += "3. رفرال شما برای همیشه در پروفایلشان ثبت می‌شود\n"
+    message_text += f"4. از هر شارژی که انجام دهند، **{REFERRAL_PERCENT}%** به حساب شما اضافه می‌شود\n\n"
+    
+    # نمایش لیست کاربران رفرال شده
+    if referral_history:
+        message_text += "**👥 کاربران جذب شده شما:**\n"
+        for i, referral in enumerate(referral_history[-10:], 1):
+            ref_user_id = referral.get('user_id')
+            ref_date = datetime.datetime.fromisoformat(referral.get('date')).strftime("%Y/%m/%d")
+            message_text += f"{i}. {format_user_info(ref_user_id, show_copyable=False)} - {ref_date}\n"
+        
+        if len(referral_history) > 10:
+            message_text += f"... و {len(referral_history) - 10} نفر دیگر\n"
+    
+    message_text += "\n**⚠️ توجه:**\n"
+    message_text += f"• رفرال هر کاربر فقط یک بار و در اولین ورود ثبت می‌شود\n"
+    message_text += f"• مبلغ شارژ باید حداقل **{REFERRAL_MIN_AMOUNT:,}** تومان باشد تا رفرال محاسبه شود\n"
+    message_text += f"• رفرال پس از تأیید رسید شارژ توسط ادمین به حساب شما واریز می‌شود"
     
     # ایجاد دکمه‌های اشتراک‌گذاری
     keyboard = [
@@ -1179,7 +2267,8 @@ async def referral_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # نمایش 10 تراکنش آخر
     for i, earning in enumerate(earnings_history[-10:], 1):
         date = datetime.datetime.fromisoformat(earning['date']).strftime("%Y/%m/%d")
-        message_text += f"{i}. از کاربر `{earning['from_user']}` - {earning['amount']:,.0f} تومان ({date})\n"
+        from_user_link = format_user_info(earning['from_user'], show_copyable=False)
+        message_text += f"{i}. از کاربر {from_user_link} - {earning['amount']:,.0f} تومان ({date})\n"
     
     if len(earnings_history) > 10:
         message_text += f"\nو {len(earnings_history) - 10} تراکنش دیگر..."
@@ -1334,6 +2423,282 @@ async def back_to_tutorial_categories(update: Update, context: ContextTypes.DEFA
         await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
     except Exception as e:
         logger.error(f"Failed to edit back to tutorial categories: {e}")
+
+# ============================================================
+# --- دستور ادمین برای بررسی پروفایل کاربر ---
+# ============================================================
+
+async def check_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """دستور ادمین برای بررسی پروفایل کاربر با جزئیات کامل"""
+    if update.effective_user.id not in ADMIN_CHAT_IDS:
+        await update.message.reply_text("❌ شما دسترسی لازم برای این دستور را ندارید.")
+        return
+    
+    if len(context.args) != 1:
+        await update.message.reply_text(
+            "❌ فرمت دستور:\n`/check [UserID]`\n\n"
+            "مثال: `/check 123456789`\n"
+            "همچنین می‌توانید روی هر پیامی که کاربر ارسال کرده ریپلای کرده و `/check` را تایپ کنید.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ UserID باید عدد باشد.")
+        return
+    
+    # فراخوانی تابع جدید برای نمایش پروفایل
+    await show_user_profile(update, context, target_user_id)
+
+async def check_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """هندلر برای وقتی که روی پیامی ریپلای شده و /check زده شود"""
+    if update.effective_user.id not in ADMIN_CHAT_IDS:
+        return
+    
+    if not update.message.reply_to_message:
+        return
+    
+    # گرفتن ID کاربر از پیام ریپلای شده
+    replied_message = update.message.reply_to_message
+    target_user_id = None
+    
+    if replied_message.from_user:
+        target_user_id = replied_message.from_user.id
+    elif replied_message.forward_from:
+        target_user_id = replied_message.forward_from.id
+    elif replied_message.forward_from_chat:
+        # اگر از یک چت فوروارد شده
+        await update.message.reply_text("❌ نمی‌توانم کاربر را از این پیام شناسایی کنم.")
+        return
+    
+    if target_user_id:
+        await show_user_profile(update, context, target_user_id)
+    else:
+        await update.message.reply_text("❌ نمی‌توانم کاربر را از این پیام شناسایی کنم.")
+
+async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int) -> None:
+    """نمایش پروفایل کاربر (مستقل از نحوه فراخوانی)"""
+    # دریافت اطلاعات کاربر
+    users = load_users()
+    str_target_user_id = str(target_user_id)
+    
+    if str_target_user_id not in users:
+        # اگر کاربر در دیتابیس نیست، همچنان اطلاعات اولیه را نمایش بده
+        message_text = f"👤 **پروفایل کاربر**\n\n"
+        message_text += f"🆔 **شناسه کاربر:** {format_user_info(target_user_id)}\n"
+        message_text += f"💰 **موجودی:** 0 تومان\n"
+        message_text += f"📅 **وضعیت:** کاربر در دیتابیس اصلی ثبت نشده است\n"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("➕ افزایش موجودی", callback_data=f"add_balance_{target_user_id}"),
+                InlineKeyboardButton("📞 تماس با کاربر", callback_data=f"contact_user_{target_user_id}")
+            ],
+            [
+                InlineKeyboardButton("🔍 بررسی بیشتر", callback_data=f"investigate_user_{target_user_id}"),
+                InlineKeyboardButton("➕ ثبت کاربر جدید", callback_data=f"register_user_{target_user_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.message:
+            await update.message.reply_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+        elif update.callback_query:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+        return
+    
+    user_data = users[str_target_user_id]
+    
+    # ساخت پیام اطلاعات کاربر
+    message_text = f"👤 **پروفایل کاربر**\n\n"
+    message_text += f"🆔 **شناسه کاربر:** {format_user_info(target_user_id)}\n"
+    
+    # اطلاعات حساب
+    balance = user_data.get("balance", 0.0)
+    join_date = user_data.get("join_date", "نامشخص")
+    notes = user_data.get("notes", "")
+    message_text += f"💰 **موجودی:** {balance:,.0f} تومان\n"
+    message_text += f"📅 **تاریخ عضویت:** {join_date}\n"
+    if notes:
+        message_text += f"📝 **یادداشت:** {notes}\n"
+    
+    # اطلاعات رفرال
+    referral_by = user_data.get("referral_by")
+    referral_earnings = user_data.get("referral_earnings", 0.0)
+    referrals_count = user_data.get("referrals_count", 0)
+    
+    if referral_by:
+        message_text += f"🔗 **رفرال دهنده:** {format_user_info(referral_by, show_copyable=False)}\n"
+    else:
+        message_text += f"🔗 **رفرال دهنده:** ندارد\n"
+    
+    message_text += f"👥 **کاربران جذب شده:** {referrals_count} نفر\n"
+    message_text += f"💵 **درآمد رفرال:** {referral_earnings:,.0f} تومان\n"
+    
+    # اطلاعات سرویس‌ها
+    services = user_data.get("services", [])
+    message_text += f"\n📂 **سرویس‌های فعال:** {len(services)} عدد\n"
+    
+    if services:
+        message_text += "\n**لیست سرویس‌ها (آخرین 5 عدد):**\n"
+        for i, service in enumerate(services[-5:], 1):
+            config_name = service.get('config_name', 'نامشخص')
+            server_key = service.get('server_key', 'نامشخص')
+            server_name = SERVERS_CONFIG.get(server_key, {}).get('display_name', server_key)
+            internal_key = service.get('internal_key', 'نامشخص')
+            service_type = SERVICES.get(internal_key, {}).get('label', internal_key)
+            purchase_date = service.get('purchase_date', 'نامشخص')
+            
+            try:
+                purchase_date_formatted = datetime.datetime.fromisoformat(purchase_date).strftime("%Y/%m/%d")
+            except:
+                purchase_date_formatted = purchase_date
+            
+            message_text += f"{i}. **{config_name}**\n"
+            message_text += f"   ├─ نوع: {service_type}\n"
+            message_text += f"   ├─ سرور: {server_name}\n"
+            message_text += f"   └─ تاریخ خرید: {purchase_date_formatted}\n"
+        
+        if len(services) > 5:
+            message_text += f"\nو {len(services) - 5} سرویس دیگر...\n"
+    
+    # بررسی تاریخچه رفرال‌های جذب شده (آخرین 5 نفر)
+    referral_history = get_referral_history(target_user_id)
+    if referral_history:
+        message_text += f"\n**👥 کاربران جذب شده (آخرین ۵ نفر):**\n"
+        for i, referral in enumerate(referral_history[-5:], 1):
+            ref_user_id = referral.get('user_id')
+            ref_date = datetime.datetime.fromisoformat(referral.get('date')).strftime("%Y/%m/%d")
+            message_text += f"{i}. {format_user_info(ref_user_id, show_copyable=False)} - {ref_date}\n"
+        
+        if len(referral_history) > 5:
+            message_text += f"... و {len(referral_history) - 5} نفر دیگر\n"
+    
+    # بررسی تاریخچه درآمدهای رفرال
+    earnings_history = get_referral_earnings_history(target_user_id)
+    if earnings_history:
+        total_earnings = sum(item['amount'] for item in earnings_history)
+        message_text += f"\n**💰 تاریخچه درآمد رفرال:**\n"
+        message_text += f"مجموع درآمد: **{total_earnings:,.0f}** تومان\n"
+        message_text += f"تعداد تراکنش: {len(earnings_history)} عدد\n"
+    
+    # اطلاعات تست رایگان
+    if has_user_used_free_trial(target_user_id):
+        free_trial_users = load_free_trial_users()
+        trial_data = free_trial_users.get(str_target_user_id, {})
+        used_date = trial_data.get('used_date', 'نامشخص')
+        try:
+            used_date_formatted = datetime.datetime.fromisoformat(used_date).strftime("%Y/%m/%d")
+        except:
+            used_date_formatted = used_date
+        
+        message_text += f"\n⚠️ **تست رایگان:** استفاده کرده\n"
+        message_text += f"📅 تاریخ استفاده: {used_date_formatted}\n"
+    
+    # دکمه‌های عملیاتی
+    keyboard = [
+        [
+            InlineKeyboardButton("➕ افزایش موجودی", callback_data=f"add_balance_{target_user_id}")
+            #InlineKeyboardButton("📞 تماس با کاربر", callback_data=f"contact_user_{target_user_id}")
+        ],
+        [
+            InlineKeyboardButton("📊 جزئیات تراکنش‌ها", callback_data=f"transaction_details_{target_user_id}_1"),
+            InlineKeyboardButton("📂 بررسی سرویس‌ها", callback_data=f"service_details_{target_user_id}_1")
+        ],
+        [
+            InlineKeyboardButton("🔍 بررسی جامع", callback_data=f"investigate_user_{target_user_id}"),
+            InlineKeyboardButton("✏️ ویرایش اطلاعات", callback_data=f"edit_user_{target_user_id}")
+        ],
+        [
+            InlineKeyboardButton("📋 لیست کامل رفرال‌ها", callback_data=f"full_referral_list_{target_user_id}_1"),
+            InlineKeyboardButton("📋 کپی ID کاربر", callback_data=f"copy_user_id_{target_user_id}")
+        ],
+        [
+            InlineKeyboardButton("🔄 به‌روزرسانی", callback_data=f"refresh_profile_{target_user_id}"),
+            InlineKeyboardButton("🔙 بستن", callback_data="close_profile")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.message:
+        await update.message.reply_text(
+            message_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+    elif update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        try:
+            await query.edit_message_text(
+                message_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+        except Exception:
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text=message_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+
+async def add_balance_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """شروع فرآیند افزایش موجودی به صورت تعاملی"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.from_user.id not in ADMIN_CHAT_IDS:
+        await query.answer("❌ شما دسترسی لازم ندارید.", show_alert=True)
+        return
+    
+    target_user_id = int(query.data.split("add_balance_")[1])
+    context.user_data['add_balance_target'] = target_user_id
+    
+    await query.edit_message_text(
+        f"💰 **افزایش موجودی کاربر**\n\n"
+        f"👤 کاربر: {format_user_info(target_user_id)}\n\n"
+        f"لطفاً مبلغ را به تومان وارد کنید:\n"
+        f"مثال: 50000",
+        parse_mode="Markdown"
+    )
+    
+    # ذخیره وضعیت برای دریافت مبلغ
+    context.user_data['awaiting_amount_for'] = target_user_id
+
+async def copy_user_id_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """کپی کردن ID کاربر"""
+    query = update.callback_query
+    await query.answer()
+    
+    target_user_id = int(query.data.split("copy_user_id_")[1])
+    
+    # نمایش ID قابل کپی
+    await query.answer(f"ID کاربر: {target_user_id}\n\nاین ID در کلیپ‌برد شما کپی شد.", show_alert=True)
+    
+    # می‌توانید اینجا کدی برای کپی کردن به کلیپ‌برد اضافه کنید
+    # (البته تلگرام API مستقیم برای این کار ندارد، اما می‌توان پیام جدیدی با ID ارسال کرد)
+    
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=f"🆔 **شناسه کاربر برای کپی:**\n\n`{target_user_id}`\n\n"
+             f"می‌توانید این متن را کپی کنید.",
+        parse_mode="Markdown"
+    )
+
+async def refresh_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """به‌روزرسانی پروفایل"""
+    query = update.callback_query
+    await query.answer("در حال به‌روزرسانی...")
+    
+    target_user_id = int(query.data.split("refresh_profile_")[1])
+    
+    # نمایش مجدد پروفایل
+    await show_user_profile(update, context, target_user_id)
 
 # 🌟 انتخاب سرور قبل از انتخاب سرویس
 async def select_server_for_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1660,8 +3025,12 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # کسر وجه فقط برای سرویس‌های پولی
     if price_toman > 0:
         new_balance = update_user_balance(user_id, -price_toman)
+        # افزودن تراکنش خرید به تاریخچه
+        add_transaction(user_id, "purchase", price_toman, f"خرید سرویس {panel_info['label']} - {config_name}")
     else:
         new_balance = get_user_balance(user_id)
+        # افزودن تراکنش تست رایگان به تاریخچه
+        add_transaction(user_id, "purchase", 0, f"سرویس تست رایگان - {config_name}")
     
     vmess_link, client_uuid, sub_link = await xui_add_client(server_key, user_id, volume_gb, config_name, days, limit_ip)
     
@@ -1710,7 +3079,8 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             for admin_id in ADMIN_CHAT_IDS:
                 await context.bot.send_message(
                     admin_id,
-                    f"خرید جدید:\nکاربر: {user_id}\nکانفیگ: {config_name}\nسرور: {server_name}\nپلن: {internal_key}"
+                    f"خرید جدید:\nکاربر: {format_user_info(user_id, show_copyable=False)}\nکانفیگ: {config_name}\nسرور: {server_name}\nپلن: {internal_key}",
+                    parse_mode="Markdown"
                 )
         except Exception as e:
             logger.error(f"Failed to notify admin: {e}")
@@ -1719,6 +3089,8 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # بازگشت وجه فقط برای سرویس‌های پولی
         if price_toman > 0:
             update_user_balance(user_id, price_toman)
+            # حذف تراکنش ناموفق از تاریخچه
+            # (در این نسخه ساده، تراکنش‌ها را حذف نمی‌کنیم، اما می‌توانیم آن را علامت‌گذاری کنیم)
         try:
             await query.edit_message_text("❌ خطا در ایجاد کانفیگ. لطفاً با پشتیبانی تماس بگیرید. در صورت کسر وجه، مبلغ به کیف پول شما بازگشت داده شد.")
         except Exception:
@@ -1991,9 +3363,6 @@ async def finalize_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         config_name = context.user_data.get('renewal_target_name')
         server_key = context.user_data.get('renewal_target_server_key')
         server_name = SERVERS_CONFIG.get(server_key, {}).get('display_name', "نامشناس")
-        
-        volume_add = int(panel_info['volume'].split(' ')[0])
-        days_add = panel_info['days']
     except Exception as e:
         logger.error(f"Failed to retrieve renewal data in finalize_renewal: {e}")
         try:
@@ -2016,6 +3385,11 @@ async def finalize_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
     new_balance = update_user_balance(user_id, -price_toman)
     
+    # افزودن تراکنش تمدید به تاریخچه
+    add_transaction(user_id, "renewal", price_toman, f"تمدید سرویس {config_name} - {panel_info['label']}")
+    
+    volume_add = int(panel_info['volume'].split(' ')[0])
+    days_add = panel_info['days']
     success, new_total_gb, new_expiry_days = await xui_update_client_v2(server_key, user_id, config_name, volume_add, days_add)
     
     if success:
@@ -2040,7 +3414,8 @@ async def finalize_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             for admin_id in ADMIN_CHAT_IDS:
                 await context.bot.send_message(
                     admin_id,
-                    f"تمدید سرویس:\nکاربر: {user_id}\nکانفیگ: {config_name}\nسرور: {server_name}\nپلن: {internal_key}\nاضافه شده: {volume_add} GB و {days_add} روز"
+                    f"تمدید سرویس:\nکاربر: {format_user_info(user_id, show_copyable=False)}\nکانفیگ: {config_name}\nسرور: {server_name}\nپلن: {internal_key}\nاضافه شده: {volume_add} GB و {days_add} روز",
+                    parse_mode="Markdown"
                 )
         except Exception as e:
             logger.error(f"Failed to notify admin: {e}")
@@ -2137,7 +3512,7 @@ async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TY
     admin_message = (
         f"📩 درخواست شارژ کیف پول\n\n"
         f"👤 کاربر: {user.first_name} {user.last_name or ''}\n"
-        f"🆔 ID: {user.id}\n"
+        f"🆔 ID: {format_user_info(user.id)}\n"
         f"💰 مبلغ: {amount_toman:,.0f} تومان\n\n"
         f"لطفاً رسید را بررسی و تأیید کنید:"
     )
@@ -2158,7 +3533,8 @@ async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TY
                 chat_id=admin_id,
                 photo=receipt_file_id,
                 caption=admin_message,
-                reply_markup=reply_markup
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
             )
             # ذخیره اطلاعات پیام برای ادمین
             message_to_admin = admin_id
@@ -2200,10 +3576,15 @@ async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT
     # افزایش موجودی کاربر
     new_balance = update_user_balance(user_id, amount_toman)
     
+    # افزودن تراکنش واریز به تاریخچه
+    add_transaction(user_id, "deposit", amount_toman, f"واریز از طریق کارت به کارت - تأیید شده توسط ادمین", query.from_user.id)
+    
     # محاسبه و اضافه کردن پورسانت رفرال (اگر مبلغ به حداقل رسید)
     referral_earning = 0.0
+    referral_by = None
+    
     if amount_toman >= REFERRAL_MIN_AMOUNT:
-        referral_earning = add_referral_earning(user_id, amount_toman)
+        referral_earning, referral_by = add_referral_earning(user_id, amount_toman)
     
     # به‌روزرسانی وضعیت رسید
     receipt_id = None
@@ -2221,30 +3602,31 @@ async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT
         message_text = f"✅ رسید شما تأیید شد!\n\n💰 مبلغ {amount_toman:,.0f} تومان به کیف پول شما اضافه شد.\n\n💳 موجودی جدید: {new_balance:,.0f} تومان"
         
         # اضافه کردن اطلاعات رفرال اگر رفرال‌ای داشت
-        if referral_earning > 0:
-            message_text += f"\n\n🎉 پورسانت رفرال: {referral_earning:,.0f} تومان نیز به حساب رفرال دهنده شما واریز شد."
+        if referral_earning > 0 and referral_by:
+            message_text += f"\n\n🎉 پورسانت رفرال: {referral_earning:,.0f} تومان نیز به حساب {format_user_info(referral_by, show_copyable=False)} واریز شد."
         
         await context.bot.send_message(
             chat_id=user_id,
             text=message_text,
-            reply_markup=MAIN_MENU_REPLY_MARKUP
+            reply_markup=MAIN_MENU_REPLY_MARKUP,
+            parse_mode="Markdown"
         )
     except error.Forbidden:
         logger.warning(f"User {user_id} blocked the bot, cannot send receipt approval notification")
         # اطلاع به ادمین که کاربر ربات را بلاک کرده
-        await query.message.reply_text(f"⚠️ رسید تأیید شد اما کاربر {user_id} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.")
+        await query.message.reply_text(f"⚠️ رسید تأیید شد اما کاربر {format_user_info(user_id)} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Failed to notify user {user_id}: {e}")
     
     # به‌روزرسانی پیام ادمین
-    admin_message = f"✅ رسید تأیید شد\n\n👤 کاربر: {user_id}\n💰 مبلغ: {amount_toman:,.0f} تومان\n✅ توسط: {query.from_user.first_name}"
+    admin_message = f"✅ رسید تأیید شد\n\n👤 کاربر: {format_user_info(user_id)}\n💰 مبلغ: {amount_toman:,.0f} تومان\n✅ توسط: {query.from_user.first_name}"
     
     # اضافه کردن اطلاعات رفرال به پیام ادمین
-    if referral_earning > 0:
-        admin_message += f"\n🎉 پورسانت رفرال: {referral_earning:,.0f} تومان به رفرال دهنده واریز شد."
+    if referral_earning > 0 and referral_by:
+        admin_message += f"\n🎉 پورسانت رفرال: {referral_earning:,.0f} تومان به رفرال دهنده {format_user_info(referral_by, show_copyable=False)} واریز شد."
     
     try:
-        await query.edit_message_caption(caption=admin_message)
+        await query.edit_message_caption(caption=admin_message, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Failed to edit admin message: {e}")
 
@@ -2280,14 +3662,15 @@ async def reject_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
         )
     except error.Forbidden:
         logger.warning(f"User {user_id} blocked the bot, cannot send receipt rejection notification")
-        await query.message.reply_text(f"⚠️ رسید رد شد اما کاربر {user_id} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.")
+        await query.message.reply_text(f"⚠️ رسید رد شد اما کاربر {format_user_info(user_id)} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Failed to notify user {user_id}: {e}")
     
     # به‌روزرسانی پیام ادمین
     try:
         await query.edit_message_caption(
-            caption=f"❌ رسید رد شد\n\n👤 کاربر: {user_id}\n❌ توسط: {query.from_user.first_name}"
+            caption=f"❌ رسید رد شد\n\n👤 کاربر: {format_user_info(user_id)}\n❌ توسط: {query.from_user.first_name}",
+            parse_mode="Markdown"
         )
     except Exception as e:
         logger.error(f"Failed to edit admin message: {e}")
@@ -2315,9 +3698,14 @@ async def add_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     new_balance = update_user_balance(user_id, amount)
     
+    # افزودن تراکنش به تاریخچه
+    add_transaction(user_id, "admin_adjustment", amount, f"افزایش موجودی توسط دستور /add", update.effective_user.id)
+    
     # اطلاع به ادمین
+    user_link = format_user_info(user_id)
     await update.message.reply_text(
-        f"✅ موجودی کاربر {user_id} به میزان {amount:,.0f} تومان افزایش یافت.\n\n💰 موجودی جدید: {new_balance:,.0f} تومان"
+        f"✅ موجودی کاربر {user_link} به میزان {amount:,.0f} تومان افزایش یافت.\n\n💰 موجودی جدید: {new_balance:,.0f} تومان",
+        parse_mode="Markdown"
     )
     
     # اطلاع به کاربر
@@ -2329,10 +3717,76 @@ async def add_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
     except error.Forbidden:
         logger.warning(f"User {user_id} blocked the bot, cannot send balance update notification")
-        await update.message.reply_text(f"⚠️ موجودی افزایش یافت اما کاربر {user_id} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.")
+        await update.message.reply_text(f"⚠️ موجودی افزایش یافت اما کاربر {user_link} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Failed to notify user {user_id}: {e}")
-        await update.message.reply_text(f"⚠️ کاربر {user_id} پیدا نشد یا خطا در ارسال پیام.")
+        await update.message.reply_text(f"⚠️ کاربر {user_link} پیدا نشد یا خطا در ارسال پیام.", parse_mode="Markdown")
+
+# ============================================================
+# --- دستور ادمین برای ارسال پیام همگانی (Announce) ---
+# ============================================================
+
+async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """دستور ادمین برای ارسال پیام همگانی به تمام کاربران"""
+    if update.effective_user.id not in ADMIN_CHAT_IDS:
+        await update.message.reply_text("❌ شما دسترسی لازم برای این دستور را ندارید.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ لطفاً پیام خود را بعد از دستور وارد کنید.\nمثال: `/announce سلام به همه کاربران عزیز!`", parse_mode="Markdown")
+        return
+    
+    # جمع‌آوری متن پیام
+    message_text = ' '.join(context.args)
+    
+    # دریافت لیست تمام کاربران
+    users = load_users()
+    user_ids = list(users.keys())
+    
+    if not user_ids:
+        await update.message.reply_text("❌ هیچ کاربری در سیستم وجود ندارد.")
+        return
+    
+    # ارسال پیام به تمام کاربران
+    success_count = 0
+    fail_count = 0
+    blocked_users = []
+    
+    await update.message.reply_text(f"📢 در حال ارسال پیام به {len(user_ids)} کاربر...")
+    
+    for str_user_id in user_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=int(str_user_id),
+                text=f"📢 **پیام همگانی از مدیریت:**\n\n{message_text}",
+                parse_mode="Markdown"
+            )
+            success_count += 1
+            # تاخیر کوچک برای جلوگیری از محدودیت تلگرام
+            await asyncio.sleep(0.1)
+        except error.Forbidden:
+            blocked_users.append(str_user_id)
+            fail_count += 1
+        except Exception as e:
+            logger.error(f"Failed to send announcement to user {str_user_id}: {e}")
+            fail_count += 1
+    
+    # گزارش نتایج به ادمین
+    report_message = (
+        f"📊 **گزارش ارسال پیام همگانی**\n\n"
+        f"✅ ارسال موفق: {success_count} کاربر\n"
+        f"❌ ارسال ناموفق: {fail_count} کاربر\n"
+        f"📝 متن پیام: {message_text[:100]}..."
+    )
+    
+    if blocked_users:
+        report_message += f"\n\n🚫 کاربران مسدود شده ({len(blocked_users)} نفر):\n"
+        for i, user_id in enumerate(blocked_users[:10], 1):
+            report_message += f"{i}. {format_user_info(int(user_id))}\n"
+        if len(blocked_users) > 10:
+            report_message += f"و {len(blocked_users) - 10} کاربر دیگر..."
+    
+    await update.message.reply_text(report_message, parse_mode="Markdown")
 
 # ============================================================
 # --- باقی هندلرها ---
@@ -2351,6 +3805,11 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data.pop('renewal_target_server_key', None)
     context.user_data.pop('receipt_file_id', None)
     context.user_data.pop('wallet_flow', None)
+    context.user_data.pop('awaiting_amount_for', None)
+    context.user_data.pop('awaiting_message_for', None)
+    context.user_data.pop('edit_balance_target', None)
+    context.user_data.pop('edit_referral_target', None)
+    context.user_data.pop('edit_notes_target', None)
     
     if update.message and update.message.text.lower() == "❌ لغو عملیات".lower():
         try: await context.bot.delete_message(chat_id=user_id, message_id=update.message.message_id)
@@ -2375,7 +3834,7 @@ async def support_receive_message(update: Update, context: ContextTypes.DEFAULT_
     original_message = update.message
     
     try:
-        admin_message_header = f"📞 پیام پشتیبانی جدید\nنام کاربر: {user.first_name} (ID: {user.id})\n"
+        admin_message_header = f"📞 پیام پشتیبانی جدید\nنام کاربر: {user.first_name} (ID: {format_user_info(user.id, show_copyable=False)})\n"
         
         if 'support_map' not in context.bot_data: 
             context.bot_data['support_map'] = {}
@@ -2383,7 +3842,7 @@ async def support_receive_message(update: Update, context: ContextTypes.DEFAULT_
         success_count = 0
         for admin_id in ADMIN_CHAT_IDS:
             try:
-                await context.bot.send_message(admin_id, admin_message_header)
+                await context.bot.send_message(admin_id, admin_message_header, parse_mode="Markdown")
                 
                 # فوروارد پیام اصلی به ادمین (کاربر برای همه نوع محتوا)
                 forwarded_message = await context.bot.forward_message(
@@ -2548,6 +4007,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     data = query.data
     
+    # هندلرهای اصلی
     if data == "OPEN_MY_SERVICES" or data == "back_to_services":
         return await my_services(update, context) 
     
@@ -2580,6 +4040,72 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         
     if data == "back_to_tutorial_categories":
         return await back_to_tutorial_categories(update, context)
+    
+    if data.startswith("add_balance_"):
+        return await add_balance_interactive(update, context)
+    
+    if data.startswith("copy_user_id_"):
+        return await copy_user_id_callback(update, context)
+    
+    if data.startswith("refresh_profile_"):
+        return await refresh_profile_callback(update, context)
+    
+    # هندلرهای جدید برای قابلیت‌های ادمین
+    if data.startswith("transaction_details_"):
+        parts = data.split("_")
+        target_user_id = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 else 1
+        return await show_transaction_details(update, context, target_user_id, page)
+        
+    if data.startswith("service_details_"):
+        parts = data.split("_")
+        target_user_id = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 else 1
+        return await show_service_details_admin(update, context, target_user_id, page)
+        
+    if data.startswith("edit_user_"):
+        target_user_id = int(data.split("edit_user_")[1])
+        return await edit_user_info_start(update, context, target_user_id)
+    
+    if data.startswith("edit_balance_"):
+        return await edit_user_balance_start(update, context)
+        
+    if data.startswith("edit_referral_"):
+        return await edit_user_referral_start(update, context)
+        
+    if data.startswith("edit_notes_"):
+        return await edit_user_notes_start(update, context)
+        
+    if data.startswith("investigate_user_"):
+        target_user_id = int(data.split("investigate_user_")[1])
+        return await investigate_user_info(update, context, target_user_id)
+        
+    if data.startswith("register_user_"):
+        target_user_id = int(data.split("register_user_")[1])
+        return await register_user_admin(update, context, target_user_id)
+        
+    if data.startswith("full_referral_list_"):
+        parts = data.split("_")
+        target_user_id = int(parts[3])
+        page = int(parts[4]) if len(parts) > 4 else 1
+        return await show_full_referral_list(update, context, target_user_id, page)
+        
+    if data.startswith("referral_earnings_history_"):
+        parts = data.split("_")
+        target_user_id = int(parts[3])
+        page = int(parts[4]) if len(parts) > 4 else 1
+        return await referral_earnings_history_admin(update, context, target_user_id, page)
+    
+    if data.startswith("transaction_page_info") or data.startswith("service_page_info") or data.startswith("referral_page_info") or data.startswith("earnings_page_info"):
+        await query.answer("شماره صفحه جاری", show_alert=False)
+        return
+    
+    if data == "close_profile":
+        try:
+            await query.message.delete()
+        except Exception:
+            await query.answer("پروفایل بسته شد.")
+        return
         
     if data.startswith("SERVICE_DETAILS_"):
         config_name_or_plan_key = data.split("SERVICE_DETAILS_")[1]
@@ -2636,11 +4162,36 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     if data.startswith("SHOW_SUB_LINK_"):
         config_name = data.split("SHOW_SUB_LINK_")[1]
         return await send_sub_link(update, context, config_name)
+    
+    # اگر هیچکدام از الگوها مطابقت نکرد
+    await query.answer("❌ این دکمه هنوز پیاده‌سازی نشده است.", show_alert=True)
 
 def main() -> None:
     """شروع به کار ربات"""
-    application = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
+    # ایجاد Application با روش جدید
+    application = Application.builder().token(BOT_TOKEN).build()
 
+    # ========== تغییر 1: اضافه کردن هندلرهای اصلی در ابتدا ==========
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("add", add_balance_command))  # دستور ادمین
+    application.add_handler(CommandHandler("announce", announce_command))  # دستور ارسال پیام همگانی
+    application.add_handler(CommandHandler("check", check_user_profile))  # دستور بررسی پروفایل کاربر
+    application.add_handler(CommandHandler("myref", my_referral))  # دستور نمایش لینک رفرال
+    application.add_handler(CommandHandler("tutorial", connection_tutorials_start))  # دستور آموزش
+    
+    # هندلر جدید برای `/check` با ریپلای
+    application.add_handler(MessageHandler(
+        filters.Chat(ADMIN_CHAT_IDS) & filters.Regex(r'^/check$') & filters.REPLY,
+        check_reply_handler
+    ))
+    
+    # ========== تغییر 2: هندلرهای دکمه‌های منوی اصلی قبل از مکالمات ==========
+    application.add_handler(MessageHandler(filters.Regex(r"^👤 حساب من$"), my_account))
+    application.add_handler(MessageHandler(filters.Regex(r"^📂 سرویس‌های من$"), my_services))
+    application.add_handler(MessageHandler(filters.Regex(r"^🔗 لینک رفرال$"), my_referral))  # هندلر دکمه لینک رفرال
+    application.add_handler(MessageHandler(filters.Regex(r"^📚 آموزش اتصال$"), connection_tutorials_start))  # هندلر دکمه آموزش اتصال
+    
+    # ========== تغییر 3: سپس هندلرهای مکالمه ==========
     # مکالمه جدید شارژ کیف پول (کارت به کارت)
     wallet_conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r"^💰 شارژ کیف پول$"), wallet_start)],
@@ -2658,19 +4209,19 @@ def main() -> None:
     )
 
     support_conv_handler = ConversationHandler(
-    entry_points=[MessageHandler(filters.Regex(r"^📞 پشتیبانی$"), support_start)],
-    states={
-        STATE_GET_TICKET: [
-            MessageHandler(
-                filters.ALL & ~filters.COMMAND & filters.ChatType.PRIVATE, 
-                support_receive_message
-            )
-        ]
-    },
-    fallbacks=[
-        CommandHandler("cancel", cancel_conversation), 
-        MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation)
-    ],
+        entry_points=[MessageHandler(filters.Regex(r"^📞 پشتیبانی$"), support_start)],
+        states={
+            STATE_GET_TICKET: [
+                MessageHandler(
+                    filters.ALL & ~filters.COMMAND & filters.ChatType.PRIVATE, 
+                    support_receive_message
+                )
+            ]
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversation), 
+            MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation)
+        ],
     )
 
     purchase_conv_handler = ConversationHandler(
@@ -2705,30 +4256,26 @@ def main() -> None:
     )
 
     application.add_error_handler(error_handler)
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("add", add_balance_command))  # دستور ادمین
-    application.add_handler(CommandHandler("myref", my_referral))  # دستور نمایش لینک رفرال
-    application.add_handler(CommandHandler("tutorial", connection_tutorials_start))  # دستور آموزش
     
+    # ========== تغییر 4: اضافه کردن مکالمات بعد از هندلرهای اصلی ==========
     application.add_handler(wallet_conv_handler)
     application.add_handler(support_conv_handler)
-    
     application.add_handler(purchase_conv_handler) 
-    
     application.add_handler(config_name_conv_handler) 
     application.add_handler(renewal_conv_handler)
+    
+    # هندلر یکپارچه برای دریافت ورودی‌های ویرایش ادمین
+    application.add_handler(MessageHandler(
+        filters.TEXT & filters.Chat(ADMIN_CHAT_IDS) & ~filters.COMMAND,
+        handle_admin_edit_input
+    ))
     
     # هندلرهای دکمه‌های شیشه‌ای
     application.add_handler(CallbackQueryHandler(back_to_select_server, pattern="^back_to_select_server$"))
     application.add_handler(CallbackQueryHandler(back_to_tutorial_categories, pattern="^back_to_tutorial_categories$"))
     
     # هندلر جامع برای تمام دکمه‌های شیشه‌ای
-    application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^SERVICE_DETAILS_|SHOW_SUB_LINK_|back_to_main_from_services|back_to_services|OPEN_MY_SERVICES|approve_receipt_|reject_receipt_|REFERRAL_HISTORY_|back_to_referral_link|TUTORIAL_CAT_|TUTORIAL_APP_|back_to_main_from_tutorial"))
-    
-    application.add_handler(MessageHandler(filters.Regex(r"^👤 حساب من$"), my_account))
-    application.add_handler(MessageHandler(filters.Regex(r"^📂 سرویس‌های من$"), my_services))
-    application.add_handler(MessageHandler(filters.Regex(r"^🔗 لینک رفرال$"), my_referral))  # هندلر دکمه لینک رفرال
-    application.add_handler(MessageHandler(filters.Regex(r"^📚 آموزش اتصال$"), connection_tutorials_start))  # هندلر دکمه آموزش اتصال
+    application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^SERVICE_DETAILS_|SHOW_SUB_LINK_|back_to_main_from_services|back_to_services|OPEN_MY_SERVICES|approve_receipt_|reject_receipt_|REFERRAL_HISTORY_|back_to_referral_link|TUTORIAL_CAT_|TUTORIAL_APP_|back_to_main_from_tutorial|add_balance_|copy_user_id_|refresh_profile_|transaction_details_|service_details_|edit_user_|edit_balance_|edit_referral_|edit_notes_|investigate_user_|register_user_|full_referral_list_|referral_earnings_history_|close_profile|transaction_page_info|service_page_info|referral_page_info|earnings_page_info"))
     
     application.add_handler(
         MessageHandler(
