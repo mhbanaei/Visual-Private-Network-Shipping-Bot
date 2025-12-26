@@ -72,7 +72,7 @@ SERVERS_CONFIG = {
 
 # تنظیمات اولیه 
 BOT_TOKEN = "BOT_TOKEN"
-ADMIN_CHAT_IDS = [6659266132, 8210063313]
+ADMIN_CHAT_IDS = [6659266132, 8210063313, 642110816]
 CARD_NUMBER = "6219861830494810"  # شماره کارت برای واریز
 
 # ⚠️ تنظیمات پروتکل VMESS
@@ -467,6 +467,112 @@ def get_user_notes(user_id: int) -> str:
         return users[str_user_id].get("notes", "")
     return ""
 
+
+# ============================================================
+# --- تابع جدید برای ارسال لاگ خرید به ادمین‌ها ---
+# ============================================================
+
+async def send_service_purchase_log_to_admins(context: ContextTypes.DEFAULT_TYPE, log_data: dict):
+    """
+    ارسال لاگ کامل خرید سرویس به تمام ادمین‌ها
+    
+    پارامترها:
+    - log_data: دیکشنری حاوی اطلاعات خرید
+    """
+    user_id = log_data.get('user_id')
+    config_name = log_data.get('config_name')
+    server_key = log_data.get('server_key')
+    server_name = log_data.get('server_name')
+    internal_key = log_data.get('internal_key')
+    service_label = log_data.get('service_label')
+    volume_gb = log_data.get('volume_gb')
+    days = log_data.get('days')
+    price_toman = log_data.get('price_toman')
+    old_balance = log_data.get('old_balance')
+    new_balance = log_data.get('new_balance')
+    vmess_link = log_data.get('vmess_link')
+    sub_link = log_data.get('sub_link')
+    uuid = log_data.get('uuid')
+    client_count = log_data.get('client_count', 1)
+    log_type = log_data.get('log_type', 'purchase')  # purchase یا renewal
+    
+    if log_type == 'purchase':
+        title = "🛒 خرید جدید سرویس"
+        emoji = "🛒"
+        action = "خریداری شد"
+    else:
+        title = "🔁 تمدید سرویس"
+        emoji = "🔁"
+        action = "تمدید شد"
+    
+    # ساخت پیام لاگ
+    message = f"{emoji} **{title}**\n\n"
+    message += f"👤 **کاربر:** {format_user_info(user_id, show_copyable=False)}\n"
+    message += f"🆔 **شناسه کاربر:** `{user_id}`\n"
+    message += f"📛 **نام کانفیگ:** `{config_name}`\n"
+    message += f"🌐 **سرور:** {server_name} (`{server_key}`)\n"
+    message += f"🛍️ **سرویس:** {service_label}\n"
+    
+    if internal_key == "FREE_TRIAL":
+        message += f"🎯 **نوع سرویس:** 🆓 تست رایگان\n"
+    else:
+        message += f"🎯 **نوع سرویس:** 💰 پولی\n"
+    
+    message += f"💾 **حجم:** {volume_gb} گیگابایت\n"
+    message += f"📅 **اعتبار:** {days} روز\n"
+    message += f"👥 **تعداد کاربر مجاز:** {client_count} نفر\n"
+    
+    if price_toman > 0:
+        message += f"💰 **هزینه:** {price_toman:,.0f} تومان\n"
+        message += f"💳 **موجودی قبل:** {old_balance:,.0f} تومان\n"
+        message += f"💳 **موجودی بعد:** {new_balance:,.0f} تومان\n"
+        message += f"📉 **مبلغ کسر شده:** {price_toman:,.0f} تومان\n"
+    else:
+        message += f"💰 **هزینه:** رایگان\n"
+        message += f"💳 **موجودی کاربر:** {old_balance:,.0f} تومان\n"
+    
+    # اطلاعات رفرال
+    referral_info = get_user_referral_info(user_id)
+    referral_by = referral_info.get("referral_by")
+    if referral_by:
+        message += f"🔗 **رفرال دهنده:** {format_user_info(referral_by, show_copyable=False)}\n"
+    
+    # اطلاعات سرویس‌های قبلی کاربر
+    services = get_user_services(user_id)
+    message += f"📊 **تعداد کل سرویس‌های کاربر:** {len(services)} عدد\n"
+    
+    # اطلاعات فنی
+    message += f"\n🔧 **اطلاعات فنی:**\n"
+    message += f"🆔 **UUID:** `{uuid}`\n"
+    
+    if sub_link:
+        message += f"🔗 **لینک اشتراک:** `{sub_link[:50]}`\n"
+    
+    message += f"🕒 **زمان {action}:** {datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S')}\n"
+    
+    # ارسال به تمام ادمین‌ها
+    for admin_id in ADMIN_CHAT_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=message,
+                parse_mode="Markdown"
+            )
+            
+            # اگر vmess_link داریم، آن را هم در یک پیام جداگانه ارسال کنیم
+            if vmess_link and len(vmess_link) < 4000:
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        #text=f"🔗 **لینک VMess برای {config_name}:**\n\n`{vmess_link}`",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send VMess link to admin {admin_id}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to send service log to admin {admin_id}: {e}")
+            
 # ============================================================
 # --- توابع مدیریت تاریخچه تراکنش‌ها ---
 # ============================================================
@@ -2292,6 +2398,10 @@ async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message_text += f"• مبلغ شارژ باید حداقل **{REFERRAL_MIN_AMOUNT:,}** تومان باشد تا رفرال محاسبه شود\n"
     message_text += f"• رفرال پس از تأیید رسید شارژ توسط ادمین به حساب شما واریز می‌شود"
     
+    message_text += "\n\n**‼️ نکته:**\n"
+    message_text += f"• در صورتی که مبلغ درآمد شما از رفرال بیش از 500,000 تومان شود\n"
+    message_text += f"• میتوانید با ثبت درخواست در پشتیبانی مبلغ درآمد خود را به کارت بانکی خود واریز کنید\n"
+    
     # ایجاد دکمه‌های اشتراک‌گذاری
     keyboard = [
         [InlineKeyboardButton("📲 اشتراک‌گذاری لینک", url=f"tg://msg_url?url={ref_link}&text=لینک%20رفرال%20من")],
@@ -3141,22 +3251,68 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await context.bot.send_message(user_id, final_message)
             await send_main_menu(user_id, context)
             
+        # 🔴 ارسال لاگ کامل خرید به ادمین‌ها
         try:
-            for admin_id in ADMIN_CHAT_IDS:
-                await context.bot.send_message(
-                    admin_id,
-                    f"خرید جدید:\nکاربر: {format_user_info(user_id, show_copyable=False)}\nکانفیگ: {config_name}\nسرور: {server_name}\nپلن: {internal_key}",
-                    parse_mode="Markdown"
-                )
-        except Exception as e:
-            logger.error(f"Failed to notify admin: {e}")
+            log_data = {
+                'user_id': user_id,
+                'config_name': config_name,
+                'server_key': server_key,
+                'server_name': server_name,
+                'internal_key': internal_key,
+                'service_label': panel_info['label'],
+                'volume_gb': volume_gb,
+                'days': days,
+                'price_toman': price_toman,
+                'old_balance': balance + price_toman if price_toman > 0 else balance,
+                'new_balance': new_balance,
+                'vmess_link': vmess_link,
+                'sub_link': sub_link,
+                'uuid': client_uuid,
+                'client_count': limit_ip,
+                'log_type': 'purchase'
+            }
             
+            await send_service_purchase_log_to_admins(context, log_data)
+            logger.info(f"Purchase log sent to admins for user {user_id}, config {config_name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send purchase log to admins: {e}")
+            # تلاش برای ارسال پیام ساده‌تر به ادمین‌ها در صورت خطا
+            try:
+                for admin_id in ADMIN_CHAT_IDS:
+                    await context.bot.send_message(
+                        admin_id,
+                        f"🛒 خرید جدید - کاربر: {format_user_info(user_id)} - کانفیگ: {config_name} - سرویس: {panel_info['label']}",
+                        parse_mode="Markdown"
+                    )
+            except Exception as e2:
+                logger.error(f"Failed to send simple notification to admins: {e2}")
+                
     else:
         # بازگشت وجه فقط برای سرویس‌های پولی
         if price_toman > 0:
             update_user_balance(user_id, price_toman)
             # حذف تراکنش ناموفق از تاریخچه
             # (در این نسخه ساده، تراکنش‌ها را حذف نمی‌کنیم، اما می‌توانیم آن را علامت‌گذاری کنیم)
+        
+        # 🔴 ارسال لاگ خرید ناموفق به ادمین‌ها
+        try:
+            for admin_id in ADMIN_CHAT_IDS:
+                await context.bot.send_message(
+                    admin_id,
+                    f"❌ خرید ناموفق سرویس\n\n"
+                    f"👤 کاربر: {format_user_info(user_id, show_copyable=False)}\n"
+                    f"📛 کانفیگ: `{config_name}`\n"
+                    f"🌐 سرور: {server_name}\n"
+                    f"🛍️ سرویس: {panel_info['label']}\n"
+                    f"💰 مبلغ: {price_toman:,.0f} تومان\n"
+                    f"📝 خطا: ایجاد کانفیگ در پنل X-UI ناموفق بود\n"
+                    f"🕒 زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}",
+                    parse_mode="Markdown"
+                )
+        except Exception as e:
+            logger.error(f"Failed to send failed purchase log to admins: {e}")
+        
         try:
             await query.edit_message_text("❌ خطا در ایجاد کانفیگ. لطفاً با پشتیبانی تماس بگیرید. در صورت کسر وجه، مبلغ به کیف پول شما بازگشت داده شد.")
         except Exception:
@@ -3476,18 +3632,69 @@ async def finalize_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await context.bot.send_message(user_id, final_message)
             await send_main_menu(user_id, context)
             
+        # 🔴 ارسال لاگ تمدید به ادمین‌ها
+        try:
+            # دریافت اطلاعات فعلی سرویس
+            _, client_data = await xui_get_client_info_by_name(server_key, config_name)
+            
+            log_data = {
+                'user_id': user_id,
+                'config_name': config_name,
+                'server_key': server_key,
+                'server_name': server_name,
+                'internal_key': internal_key,
+                'service_label': panel_info['label'],
+                'volume_gb': volume_add,
+                'days': days_add,
+                'price_toman': price_toman,
+                'old_balance': balance + price_toman,
+                'new_balance': new_balance,
+                'vmess_link': None,
+                'sub_link': None,
+                'uuid': client_data.get('id', 'نامشخص') if client_data else 'نامشخص',
+                'client_count': client_data.get('limitIp', 1) if client_data else 1,
+                'log_type': 'renewal',
+                'total_gb': new_total_gb,
+                'total_days': new_expiry_days
+            }
+            
+            await send_service_purchase_log_to_admins(context, log_data)
+            logger.info(f"Renewal log sent to admins for user {user_id}, config {config_name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send renewal log to admins: {e}")
+            # تلاش برای ارسال پیام ساده‌تر
+            try:
+                for admin_id in ADMIN_CHAT_IDS:
+                    await context.bot.send_message(
+                        admin_id,
+                        f"🔁 تمدید سرویس - کاربر: {format_user_info(user_id)} - کانفیگ: {config_name} - پلن: {panel_info['label']}",
+                        parse_mode="Markdown"
+                    )
+            except Exception as e2:
+                logger.error(f"Failed to send simple renewal notification to admins: {e2}")
+                
+    else:
+        update_user_balance(user_id, price_toman)
+        
+        # 🔴 ارسال لاگ تمدید ناموفق به ادمین‌ها
         try:
             for admin_id in ADMIN_CHAT_IDS:
                 await context.bot.send_message(
                     admin_id,
-                    f"تمدید سرویس:\nکاربر: {format_user_info(user_id, show_copyable=False)}\nکانفیگ: {config_name}\nسرور: {server_name}\nپلن: {internal_key}\nاضافه شده: {volume_add} GB و {days_add} روز",
+                    f"❌ تمدید ناموفق سرویس\n\n"
+                    f"👤 کاربر: {format_user_info(user_id, show_copyable=False)}\n"
+                    f"📛 کانفیگ: `{config_name}`\n"
+                    f"🌐 سرور: {server_name}\n"
+                    f"🛍️ پلن: {panel_info['label']}\n"
+                    f"💰 مبلغ: {price_toman:,.0f} تومان\n"
+                    f"📝 خطا: به‌روزرسانی کانفیگ در پنل X-UI ناموفق بود\n"
+                    f"🕒 زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}",
                     parse_mode="Markdown"
                 )
         except Exception as e:
-            logger.error(f"Failed to notify admin: {e}")
-            
-    else:
-        update_user_balance(user_id, price_toman)
+            logger.error(f"Failed to send failed renewal log to admins: {e}")
+        
         try:
             await query.edit_message_text("❌ خطا در به‌روزرسانی سرویس. مبلغ تمدید به کیف پول شما بازگشت داده شد.")
         except Exception:
@@ -3499,7 +3706,25 @@ async def finalize_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     context.user_data.pop('renewal_target_client_data', None)
     context.user_data.pop('in_conversation', None)
     return ConversationHandler.END
+# =========
+# -- Admin log
+# ==============
 
+async def recent_purchases_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """دستور ادمین برای مشاهده خریدهای اخیر"""
+    if update.effective_user.id not in ADMIN_CHAT_IDS:
+        await update.message.reply_text("❌ شما دسترسی لازم برای این دستور را ندارید.")
+        return
+    
+    # اینجا می‌توانید یک سیستم لاگ کامل پیاده‌سازی کنید
+    # فعلاً یک پیام ساده نمایش می‌دهیم
+    await update.message.reply_text(
+        "📊 **سیستم لاگ خریدها**\n\n"
+        "لاگ کامل خریدها و تمدیدهای کاربران به صورت خودکار به تمام ادمین‌ها ارسال می‌شود.\n\n"
+        "برای مشاهده اطلاعات هر کاربر از دستور `/check [UserID]` استفاده کنید.",
+        parse_mode="Markdown"
+    )
+    
 # ============================================================
 # --- سیستم جدید شارژ کیف پول (کارت به کارت) ---
 # ============================================================
