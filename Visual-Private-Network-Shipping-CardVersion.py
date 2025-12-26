@@ -22,6 +22,7 @@
 # 20. Added: User registration by admin
 # 21. Added: Complete referral list with pagination
 # 22. FIXED: Edit user balance, referral, and notes functionality in /check command
+# 23. ADDED: Prevent duplicate processing of receipts by multiple admins
 
 import logging
 import requests
@@ -71,7 +72,7 @@ SERVERS_CONFIG = {
 
 # تنظیمات اولیه 
 BOT_TOKEN = "BOT_TOKEN"
-ADMIN_CHAT_IDS = [6659266132, 8287371040]
+ADMIN_CHAT_IDS = [6659266132, 8210063313]
 CARD_NUMBER = "6219861830494810"  # شماره کارت برای واریز
 
 # ⚠️ تنظیمات پروتکل VMESS
@@ -574,7 +575,7 @@ def save_pending_receipts(receipts: dict):
     with open(PENDING_RECEIPTS_FILE, 'w', encoding='utf-8') as f:
         json.dump(receipts, f, indent=4, ensure_ascii=False)
 
-def add_pending_receipt(user_id: int, amount_toman: int, receipt_file_id: str, message_to_admin_id: int = None):
+def add_pending_receipt(user_id: int, amount_toman: int, receipt_file_id: str) -> str:
     """افزودن رسید جدید به لیست در انتظار"""
     receipts = load_pending_receipts()
     receipt_id = str(int(time.time() * 1000))  # شناسه یکتا بر اساس زمان
@@ -583,13 +584,57 @@ def add_pending_receipt(user_id: int, amount_toman: int, receipt_file_id: str, m
         'user_id': user_id,
         'amount_toman': amount_toman,
         'receipt_file_id': receipt_file_id,
-        'message_to_admin_id': message_to_admin_id,
         'timestamp': datetime.datetime.now().isoformat(),
-        'status': 'pending'  # pending, approved, rejected
+        'status': 'pending',  # pending, approved, rejected
+        'processed_by': None,  # شناسه ادمینی که رسید را پردازش کرده
+        'processed_at': None,   # زمان پردازش
+        'admin_message_ids': {}  # جدید: ذخیره message_id برای هر ادمین
     }
     
     save_pending_receipts(receipts)
     return receipt_id
+
+def update_admin_message_ids(receipt_id: str, admin_id: int, message_id: int):
+    """ذخیره message_id پیام ارسالی به یک ادمین"""
+    receipts = load_pending_receipts()
+    if receipt_id in receipts:
+        if 'admin_message_ids' not in receipts[receipt_id]:
+            receipts[receipt_id]['admin_message_ids'] = {}
+        receipts[receipt_id]['admin_message_ids'][str(admin_id)] = message_id
+        save_pending_receipts(receipts)
+        
+async def update_all_admin_receipt_messages(context: ContextTypes.DEFAULT_TYPE, receipt_id: str, 
+                                           new_caption: str, remove_buttons: bool = True):
+    """به‌روزرسانی همه پیام‌های رسید برای تمام ادمین‌ها"""
+    receipts = load_pending_receipts()
+    if receipt_id not in receipts:
+        return
+    
+    receipt = receipts[receipt_id]
+    admin_message_ids = receipt.get('admin_message_ids', {})
+    
+    for str_admin_id, message_id in admin_message_ids.items():
+        try:
+            admin_id = int(str_admin_id)
+            if remove_buttons:
+                # ویرایش پیام و حذف دکمه‌ها
+                await context.bot.edit_message_caption(
+                    chat_id=admin_id,
+                    message_id=message_id,
+                    caption=new_caption,
+                    parse_mode="Markdown"
+                )
+            else:
+                # فقط ویرایش کپشن
+                await context.bot.edit_message_caption(
+                    chat_id=admin_id,
+                    message_id=message_id,
+                    caption=new_caption,
+                    parse_mode="Markdown"
+                )
+        except Exception as e:
+            logger.error(f"Failed to update receipt message for admin {str_admin_id}: {e}")
+
 
 def get_pending_receipt(receipt_id: str) -> dict:
     """دریافت اطلاعات یک رسید"""
@@ -602,11 +647,43 @@ def update_receipt_status(receipt_id: str, status: str, admin_id: int = None):
     if receipt_id in receipts:
         receipts[receipt_id]['status'] = status
         if admin_id:
-            receipts[receipt_id]['admin_id'] = admin_id
+            receipts[receipt_id]['processed_by'] = admin_id
             receipts[receipt_id]['processed_at'] = datetime.datetime.now().isoformat()
         save_pending_receipts(receipts)
         return True
     return False
+
+def is_receipt_processed(receipt_id: str) -> tuple[bool, dict | None]:
+    """بررسی اینکه آیا رسید قبلاً پردازش شده است"""
+    receipts = load_pending_receipts()
+    if receipt_id in receipts:
+        receipt = receipts[receipt_id]
+        if receipt['status'] != 'pending':
+            return True, receipt
+        return False, receipt  # 🔴 تغییر این خط - برگرداندن receipt حتی اگر pending باشد
+    return False, None
+    
+def process_receipt_atomic(receipt_id: str, status: str, admin_id: int) -> tuple[bool, dict | None]:
+    """پردازش اتمی رسید - فقط یک بار توسط یک ادمین قابل پردازش است"""
+    receipts = load_pending_receipts()
+    
+    if receipt_id not in receipts:
+        return False, None
+    
+    receipt = receipts[receipt_id]
+    
+    # اگر رسید قبلاً پردازش شده باشد
+    if receipt['status'] != 'pending':
+        return False, receipt
+    
+    # پردازش رسید
+    receipt['status'] = status
+    receipt['processed_by'] = admin_id
+    receipt['processed_at'] = datetime.datetime.now().isoformat()
+    
+    save_pending_receipts(receipts)
+    return True, receipt
+    
 
 # ============================================================
 # --- توابع مدیریت سیستم رفرال ---
@@ -2210,17 +2287,6 @@ async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message_text += "3. رفرال شما برای همیشه در پروفایلشان ثبت می‌شود\n"
     message_text += f"4. از هر شارژی که انجام دهند، **{REFERRAL_PERCENT}%** به حساب شما اضافه می‌شود\n\n"
     
-    # نمایش لیست کاربران رفرال شده
-    if referral_history:
-        message_text += "**👥 کاربران جذب شده شما:**\n"
-        for i, referral in enumerate(referral_history[-10:], 1):
-            ref_user_id = referral.get('user_id')
-            ref_date = datetime.datetime.fromisoformat(referral.get('date')).strftime("%Y/%m/%d")
-            message_text += f"{i}. {format_user_info(ref_user_id, show_copyable=False)} - {ref_date}\n"
-        
-        if len(referral_history) > 10:
-            message_text += f"... و {len(referral_history) - 10} نفر دیگر\n"
-    
     message_text += "\n**⚠️ توجه:**\n"
     message_text += f"• رفرال هر کاربر فقط یک بار و در اولین ورود ثبت می‌شود\n"
     message_text += f"• مبلغ شارژ باید حداقل **{REFERRAL_MIN_AMOUNT:,}** تومان باشد تا رفرال محاسبه شود\n"
@@ -3507,42 +3573,43 @@ async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("❌ خطا در دریافت اطلاعات رسید. لطفاً دوباره تلاش کنید.")
         return await cancel_conversation(update, context)
     
+    # ذخیره رسید در لیست انتظار
+    receipt_id = add_pending_receipt(user_id, amount_toman, receipt_file_id)
+    
     # ارسال رسید به ادمین‌ها برای تأیید
     user = update.effective_user
     admin_message = (
         f"📩 درخواست شارژ کیف پول\n\n"
         f"👤 کاربر: {user.first_name} {user.last_name or ''}\n"
         f"🆔 ID: {format_user_info(user.id)}\n"
-        f"💰 مبلغ: {amount_toman:,.0f} تومان\n\n"
+        f"💰 مبلغ: {amount_toman:,.0f} تومان\n"
+        f"🆔 کد رسید: `{receipt_id}`\n\n"
+        f"وضعیت: ⏳ در انتظار تأیید\n"
         f"لطفاً رسید را بررسی و تأیید کنید:"
     )
     
     keyboard = [
         [
-            InlineKeyboardButton("✅ تأیید رسید", callback_data=f"approve_receipt_{user.id}_{amount_toman}"),
-            InlineKeyboardButton("❌ رد رسید", callback_data=f"reject_receipt_{user.id}")
+            InlineKeyboardButton("✅ تأیید رسید", callback_data=f"approve_receipt_{receipt_id}"),
+            InlineKeyboardButton("❌ رد رسید", callback_data=f"reject_receipt_{receipt_id}")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    message_to_admin = None
+    # ارسال به تمام ادمین‌ها و ذخیره message_idها
     for admin_id in ADMIN_CHAT_IDS:
         try:
-            # ارسال عکس رسید
-            await context.bot.send_photo(
+            message = await context.bot.send_photo(
                 chat_id=admin_id,
                 photo=receipt_file_id,
                 caption=admin_message,
                 reply_markup=reply_markup,
                 parse_mode="Markdown"
             )
-            # ذخیره اطلاعات پیام برای ادمین
-            message_to_admin = admin_id
+            # ذخیره message_id برای این ادمین
+            update_admin_message_ids(receipt_id, admin_id, message.message_id)
         except Exception as e:
             logger.error(f"Failed to send receipt to admin {admin_id}: {e}")
-    
-    # ذخیره رسید در لیست انتظار
-    receipt_id = add_pending_receipt(user_id, amount_toman, receipt_file_id, message_to_admin)
     
     # اطلاع به کاربر
     await update.message.reply_text(
@@ -3559,9 +3626,10 @@ async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data.pop('wallet_flow', None)
     
     return ConversationHandler.END
+    
 
 async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """هندلر تأیید رسید توسط ادمین با مدیریت خطای کاربر مسدود شده و محاسبه رفرال"""
+    """هندلر تأیید رسید توسط ادمین - نسخه بهبودیافته"""
     query = update.callback_query
     await query.answer()
     
@@ -3569,9 +3637,43 @@ async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT
         await query.message.reply_text("❌ شما دسترسی لازم برای این عمل را ندارید.")
         return
     
-    data_parts = query.data.split('_')
-    user_id = int(data_parts[2])
-    amount_toman = int(data_parts[3])
+    # استخراج receipt_id از callback_data
+    try:
+        receipt_id = query.data.split('approve_receipt_')[1]
+    except IndexError:
+        await query.answer("❌ خطا در دریافت اطلاعات رسید.", show_alert=True)
+        return
+    
+    # پردازش اتمی رسید
+    success, receipt_data = process_receipt_atomic(receipt_id, 'approved', query.from_user.id)
+    
+    if not success:
+        if receipt_data:
+            # رسید قبلاً پردازش شده
+            status = receipt_data['status']
+            processed_by = receipt_data.get('processed_by')
+            processed_at = receipt_data.get('processed_at', 'نامشخص')
+            
+            try:
+                processed_date = datetime.datetime.fromisoformat(processed_at).strftime("%Y/%m/%d %H:%M")
+            except:
+                processed_date = processed_at
+            
+            if processed_by:
+                admin_link = format_user_info(processed_by, show_copyable=False)
+                message = f"❌ این رسید قبلاً توسط {admin_link} {status} شده است.\n📅 زمان: {processed_date}"
+            else:
+                message = f"❌ این رسید قبلاً {status} شده است.\n📅 زمان: {processed_date}"
+            
+            await query.answer(message, show_alert=True)
+            return
+        else:
+            await query.answer("❌ رسید یافت نشد.", show_alert=True)
+            return
+    
+    # 🔴 رسید با موفقیت پردازش شد (اتمی)
+    user_id = receipt_data['user_id']
+    amount_toman = receipt_data['amount_toman']
     
     # افزایش موجودی کاربر
     new_balance = update_user_balance(user_id, amount_toman)
@@ -3586,16 +3688,18 @@ async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT
     if amount_toman >= REFERRAL_MIN_AMOUNT:
         referral_earning, referral_by = add_referral_earning(user_id, amount_toman)
     
-    # به‌روزرسانی وضعیت رسید
-    receipt_id = None
-    receipts = load_pending_receipts()
-    for rid, receipt in receipts.items():
-        if receipt['user_id'] == user_id and receipt['amount_toman'] == amount_toman and receipt['status'] == 'pending':
-            receipt_id = rid
-            break
+    # ساخت پیام جدید برای ادمین‌ها
+    admin_message = f"✅ رسید تأیید شد\n\n"
+    admin_message += f"👤 کاربر: {format_user_info(user_id)}\n"
+    admin_message += f"💰 مبلغ: {amount_toman:,.0f} تومان\n"
+    admin_message += f"✅ توسط: {query.from_user.first_name} ({query.from_user.id})\n"
+    admin_message += f"📅 زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}"
     
-    if receipt_id:
-        update_receipt_status(receipt_id, 'approved', query.from_user.id)
+    if referral_earning > 0 and referral_by:
+        admin_message += f"\n🎉 پورسانت رفرال: {referral_earning:,.0f} تومان به رفرال دهنده {format_user_info(referral_by, show_copyable=False)} واریز شد."
+    
+    # به‌روزرسانی همه پیام‌های ادمین‌ها
+    await update_all_admin_receipt_messages(context, receipt_id, admin_message, remove_buttons=True)
     
     # اطلاع به کاربر
     try:
@@ -3615,23 +3719,9 @@ async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT
         logger.warning(f"User {user_id} blocked the bot, cannot send receipt approval notification")
         # اطلاع به ادمین که کاربر ربات را بلاک کرده
         await query.message.reply_text(f"⚠️ رسید تأیید شد اما کاربر {format_user_info(user_id)} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.", parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Failed to notify user {user_id}: {e}")
-    
-    # به‌روزرسانی پیام ادمین
-    admin_message = f"✅ رسید تأیید شد\n\n👤 کاربر: {format_user_info(user_id)}\n💰 مبلغ: {amount_toman:,.0f} تومان\n✅ توسط: {query.from_user.first_name}"
-    
-    # اضافه کردن اطلاعات رفرال به پیام ادمین
-    if referral_earning > 0 and referral_by:
-        admin_message += f"\n🎉 پورسانت رفرال: {referral_earning:,.0f} تومان به رفرال دهنده {format_user_info(referral_by, show_copyable=False)} واریز شد."
-    
-    try:
-        await query.edit_message_caption(caption=admin_message, parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Failed to edit admin message: {e}")
 
 async def reject_receipt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """هندلر رد رسید توسط ادمین با مدیریت خطای کاربر مسدود شده"""
+    """هندلر رد رسید توسط ادمین - نسخه بهبودیافته"""
     query = update.callback_query
     await query.answer()
     
@@ -3639,19 +3729,52 @@ async def reject_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.message.reply_text("❌ شما دسترسی لازم برای این عمل را ندارید.")
         return
     
-    data_parts = query.data.split('_')
-    user_id = int(data_parts[2])
+    # استخراج receipt_id از callback_data
+    try:
+        receipt_id = query.data.split('reject_receipt_')[1]
+    except IndexError:
+        await query.answer("❌ خطا در دریافت اطلاعات رسید.", show_alert=True)
+        return
     
-    # به‌روزرسانی وضعیت رسید
-    receipt_id = None
-    receipts = load_pending_receipts()
-    for rid, receipt in receipts.items():
-        if receipt['user_id'] == user_id and receipt['status'] == 'pending':
-            receipt_id = rid
-            break
+    # پردازش اتمی رسید
+    success, receipt_data = process_receipt_atomic(receipt_id, 'rejected', query.from_user.id)
     
-    if receipt_id:
-        update_receipt_status(receipt_id, 'rejected', query.from_user.id)
+    if not success:
+        if receipt_data:
+            # رسید قبلاً پردازش شده
+            status = receipt_data['status']
+            processed_by = receipt_data.get('processed_by')
+            processed_at = receipt_data.get('processed_at', 'نامشخص')
+            
+            try:
+                processed_date = datetime.datetime.fromisoformat(processed_at).strftime("%Y/%m/%d %H:%M")
+            except:
+                processed_date = processed_at
+            
+            if processed_by:
+                admin_link = format_user_info(processed_by, show_copyable=False)
+                message = f"❌ این رسید قبلاً توسط {admin_link} {status} شده است.\n📅 زمان: {processed_date}"
+            else:
+                message = f"❌ این رسید قبلاً {status} شده است.\n📅 زمان: {processed_date}"
+            
+            await query.answer(message, show_alert=True)
+            return
+        else:
+            await query.answer("❌ رسید یافت نشد.", show_alert=True)
+            return
+    
+    # 🔴 رسید با موفقیت رد شد (اتمی)
+    user_id = receipt_data['user_id']
+    
+    # ساخت پیام جدید برای ادمین‌ها
+    admin_message = f"❌ رسید رد شد\n\n"
+    admin_message += f"👤 کاربر: {format_user_info(user_id)}\n"
+    admin_message += f"❌ توسط: {query.from_user.first_name} ({query.from_user.id})\n"
+    admin_message += f"📅 زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}\n"
+    admin_message += f"📝 دلیل: توسط ادمین رد شد"
+    
+    # به‌روزرسانی همه پیام‌های ادمین‌ها
+    await update_all_admin_receipt_messages(context, receipt_id, admin_message, remove_buttons=True)
     
     # اطلاع به کاربر
     try:
@@ -3662,18 +3785,6 @@ async def reject_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
         )
     except error.Forbidden:
         logger.warning(f"User {user_id} blocked the bot, cannot send receipt rejection notification")
-        await query.message.reply_text(f"⚠️ رسید رد شد اما کاربر {format_user_info(user_id)} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.", parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Failed to notify user {user_id}: {e}")
-    
-    # به‌روزرسانی پیام ادمین
-    try:
-        await query.edit_message_caption(
-            caption=f"❌ رسید رد شد\n\n👤 کاربر: {format_user_info(user_id)}\n❌ توسط: {query.from_user.first_name}",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"Failed to edit admin message: {e}")
 
 # ============================================================
 # --- دستور ادمین برای افزایش موجودی کاربر ---
