@@ -72,7 +72,7 @@ SERVERS_CONFIG = {
 
 # تنظیمات اولیه 
 BOT_TOKEN = "BOT_TOKEN"
-ADMIN_CHAT_IDS = [6659266132, 8210063313, 642110816]
+ADMIN_CHAT_IDS = [6659266132, 8210063313]
 CARD_NUMBER = "6219861830494810"  # شماره کارت برای واریز
 
 # ⚠️ تنظیمات پروتکل VMESS
@@ -4165,29 +4165,58 @@ async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return STATE_GET_TICKET
 
 async def support_receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """فوروارد پیام تیکت به ادمین‌ها با پشتیبانی از تمام انواع محتوا"""
+    """فوروارد پیام تیکت به ادمین‌ها و ذخیره اطلاعات برای پاسخ"""
     user = update.effective_user
     original_message = update.message
     
     try:
-        admin_message_header = f"📞 پیام پشتیبانی جدید\nنام کاربر: {user.first_name} (ID: {format_user_info(user.id, show_copyable=False)})\n"
+        admin_message_header = f"📞 **پیام پشتیبانی جدید**\n\n👤 کاربر: {user.first_name}\n🆔 شناسه: `{user.id}`\n📱 پیام:\n\n"
         
+        # اطمینان از وجود ساختار نگاشت
         if 'support_map' not in context.bot_data: 
             context.bot_data['support_map'] = {}
         
         success_count = 0
+        admin_message_ids = []  # لیست message_idهای ارسالی به ادمین‌ها
+        
         for admin_id in ADMIN_CHAT_IDS:
             try:
-                await context.bot.send_message(admin_id, admin_message_header, parse_mode="Markdown")
+                # ارسال هدر به ادمین
+                header_message = await context.bot.send_message(
+                    admin_id, 
+                    admin_message_header, 
+                    parse_mode="Markdown"
+                )
                 
-                # فوروارد پیام اصلی به ادمین (کاربر برای همه نوع محتوا)
+                # فوروارد پیام اصلی به ادمین
                 forwarded_message = await context.bot.forward_message(
                     chat_id=admin_id,
                     from_chat_id=user.id,
                     message_id=original_message.message_id
                 )
-                context.bot_data['support_map'][forwarded_message.message_id] = user.id
+                
+                # ذخیره اطلاعات نگاشت - هر دو پیام (هدر و پیام اصلی)
+                context.bot_data['support_map'][header_message.message_id] = {
+                    'user_id': user.id,
+                    'user_message_id': original_message.message_id
+                }
+                context.bot_data['support_map'][forwarded_message.message_id] = {
+                    'user_id': user.id,
+                    'user_message_id': original_message.message_id
+                }
+                
+                # ذخیره پیام‌های ارسالی
+                admin_message_ids.append(header_message.message_id)
+                admin_message_ids.append(forwarded_message.message_id)
+                
                 success_count += 1
+                
+                # ارسال راهنمای پاسخ به ادمین
+                #await context.bot.send_message(
+                #    admin_id,
+                #    "💡 برای پاسخ به کاربر، کافیست روی هر یک از پیام‌های بالا **Reply** کرده و پیام خود را بنویسید.",
+                #    reply_to_message_id=forwarded_message.message_id
+                #)
                 
             except error.Forbidden:
                 logger.warning(f"Bot is blocked by admin {admin_id}, skipping this admin")
@@ -4199,6 +4228,16 @@ async def support_receive_message(update: Update, context: ContextTypes.DEFAULT_
         # اگر حداقل به یک ادمین ارسال شد، پیام تأیید به کاربر بفرست
         if success_count > 0:
             try:
+                # ذخیره اطلاعات پیام کاربر
+                if 'user_support_messages' not in context.bot_data:
+                    context.bot_data['user_support_messages'] = {}
+                
+                context.bot_data['user_support_messages'][str(user.id)] = {
+                    'message_id': original_message.message_id,
+                    'admin_message_ids': admin_message_ids,
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+                
                 await update.message.reply_text(
                     "✅ پیام شما به پشتیبانی ارسال شد. منتظر پاسخ باشید.", 
                     reply_markup=MAIN_MENU_REPLY_MARKUP
@@ -4234,34 +4273,91 @@ async def support_receive_message(update: Update, context: ContextTypes.DEFAULT_
     return ConversationHandler.END
 
 async def reply_to_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """پاسخ ادمین به تیکت با مدیریت خطای کاربر مسدود شده"""
+    """پاسخ ادمین به تیکت - نسخه بهبودیافته"""
     if not update.message.reply_to_message:
         await update.message.reply_text("❌ لطفاً برای پاسخ دادن، پیام اصلی کاربر را ریپلای کنید.")
         return
-        
-    original_message_id = update.message.reply_to_message.message_id
-    user_id = context.bot_data.get('support_map', {}).get(original_message_id)
+    
+    admin_message = update.message
+    replied_message = update.message.reply_to_message
+    
+    # جستجوی شناسه کاربر از طریق نگاشت پیام‌ها
+    user_id = None
+    
+    # روش 1: جستجو در support_map
+    if replied_message.message_id in context.bot_data.get('support_map', {}):
+        mapping_data = context.bot_data['support_map'][replied_message.message_id]
+        user_id = mapping_data.get('user_id')
+    
+    # روش 2: جستجو در user_support_messages
+    if not user_id:
+        for str_user_id, user_data in context.bot_data.get('user_support_messages', {}).items():
+            if replied_message.message_id in user_data.get('admin_message_ids', []):
+                user_id = int(str_user_id)
+                break
     
     if user_id:
         try:
+            # ارسال پاسخ به کاربر
+            admin_name = admin_message.from_user.first_name
+            if admin_message.from_user.id in ADMIN_CHAT_IDS:
+                admin_name = "پشتیبانی"
+            
+            response_text = (
+                f"💬 **پاسخ از {admin_name}:**\n\n"
+                f"{admin_message.text}\n\n"
+                f"_برای پاسخ مجدد، از دکمه 📞 پشتیبانی استفاده کنید._"
+            )
+            
             await context.bot.send_message(
                 user_id,
-                f"💬 پاسخ پشتیبانی:\n\n{update.message.text}"
+                response_text,
+                parse_mode="Markdown"
             )
-            await update.message.reply_text("✅ پاسخ شما برای کاربر ارسال شد.")
+            
+            # تأیید ارسال به ادمین
+            await admin_message.reply_text(
+                f"✅ پاسخ شما برای کاربر {user_id} ارسال شد.",
+                reply_to_message_id=admin_message.message_id
+            )
+            
+            logger.info(f"Admin reply sent to user {user_id}")
             
         except error.Forbidden:
-            await update.message.reply_text(
+            logger.warning(f"Failed to send reply to user {user_id}: bot was blocked by the user")
+            await admin_message.reply_text(
                 "❌ ارسال پاسخ به کاربر ناموفق بود. احتمالاً کاربر ربات را مسدود کرده است."
             )
-            logger.warning(f"Failed to send reply to user {user_id}: bot was blocked by the user")
             
         except Exception as e:
             logger.error(f"Failed to reply to user {user_id}: {e}")
-            await update.message.reply_text(f"❌ خطایی در ارسال پاسخ به کاربر رخ داد: {e}")
+            await admin_message.reply_text(f"❌ خطایی در ارسال پاسخ به کاربر رخ داد: {str(e)}")
             
     else:
-        await update.message.reply_text("❌ شناسه کاربر پیدا نشد یا پیام اصلی تیکت نیست.")
+        # اگر شناسه کاربر پیدا نشد، استفاده از متد قدیمی
+        original_message_id = replied_message.message_id
+        old_user_id = context.bot_data.get('support_map', {}).get(original_message_id)
+        
+        if old_user_id:
+            try:
+                await context.bot.send_message(
+                    old_user_id,
+                    f"💬 **پاسخ پشتیبانی:**\n\n{admin_message.text}",
+                    parse_mode="Markdown"
+                )
+                await admin_message.reply_text("✅ پاسخ شما برای کاربر ارسال شد.")
+                
+            except error.Forbidden:
+                await admin_message.reply_text(
+                    "❌ ارسال پاسخ به کاربر ناموفق بود. احتمالاً کاربر ربات را مسدود کرده است."
+                )
+            except Exception as e:
+                logger.error(f"Failed to reply to user {old_user_id}: {e}")
+                await admin_message.reply_text(f"❌ خطایی در ارسال پاسخ به کاربر رخ داد: {e}")
+        else:
+            await admin_message.reply_text(
+                "❌ شناسه کاربر پیدا نشد. لطفاً مطمئن شوید که روی پیام اصلی کاربر ریپلای کرده‌اید."
+            )
 
 async def back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """بازگشت به منوی اصلی از طریق دکمه‌های شیشه‌ای"""
@@ -4517,8 +4613,8 @@ def main() -> None:
     
     # هندلر جدید برای `/check` با ریپلای
     application.add_handler(MessageHandler(
-        filters.Chat(ADMIN_CHAT_IDS) & filters.Regex(r'^/check$') & filters.REPLY,
-        check_reply_handler
+        filters.Chat(ADMIN_CHAT_IDS) & filters.TEXT & filters.REPLY,
+        reply_to_ticket
     ))
     
     # ========== تغییر 2: هندلرهای دکمه‌های منوی اصلی قبل از مکالمات ==========
