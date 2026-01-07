@@ -23,6 +23,9 @@
 # 21. Added: Complete referral list with pagination
 # 22. FIXED: Edit user balance, referral, and notes functionality in /check command
 # 23. ADDED: Prevent duplicate processing of receipts by multiple admins
+# 24. ADDED: /allmembers command for listing all users with pagination
+# 25. ADDED: /addall command for bulk balance adjustment
+# 26. ADDED: Admin action logging for /add and /addall commands
 
 import logging
 import requests
@@ -58,7 +61,7 @@ SERVERS_CONFIG = {
         "xui_panel_url": "xui_panel_url",
         "xui_username": "xui_username",
         "xui_password": "xui_password",
-        "login_path": "/login_path/login",
+        "login_path": "login_path",
         "inbound_id": 1,
         "server_address": "server_address",
         "server_port_subscription": 2096,
@@ -467,7 +470,83 @@ def get_user_notes(user_id: int) -> str:
         return users[str_user_id].get("notes", "")
     return ""
 
+# ============================================================
+# --- توابع جدید برای ارسال لاگ اقدامات ادمین ---
+# ============================================================
 
+async def send_admin_action_log(context: ContextTypes.DEFAULT_TYPE, admin_id: int, action_type: str, details: dict):
+    """
+    ارسال لاگ اقدامات ادمین به تمام ادمین‌ها
+    
+    پارامترها:
+    - admin_id: شناسه ادمین انجام‌دهنده عمل
+    - action_type: نوع عمل ('add', 'addall', 'edit', 'announce', etc.)
+    - details: جزئیات عمل
+    """
+    # تغییر 1: استفاده از await برای دریافت اطلاعات ادمین
+    try:
+        admin_chat = await context.bot.get_chat(admin_id)
+        admin_name = admin_chat.first_name or 'Admin'
+    except Exception as e:
+        logger.error(f"Failed to get admin info for {admin_id}: {e}")
+        admin_name = 'Admin'
+    
+    # ساخت پیام لاگ بر اساس نوع عمل
+    if action_type == 'add':
+        target_user_id = details.get('target_user_id')
+        amount = details.get('amount')
+        new_balance = details.get('new_balance')
+        
+        message = f"👑 **لاگ اقدام ادمین: افزایش موجودی**\n\n"
+        message += f"👤 **ادمین:** {format_user_info(admin_id)}\n"
+        message += f"🎯 **کاربر هدف:** {format_user_info(target_user_id)}\n"
+        message += f"💰 **مبلغ:** {amount:,.0f} تومان\n"
+        message += f"💳 **موجودی جدید کاربر:** {new_balance:,.0f} تومان\n"
+        message += f"📅 **زمان:** {datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S')}"
+        
+    elif action_type == 'addall':
+        amount = details.get('amount')
+        affected_users = details.get('affected_users', 0)
+        total_amount = details.get('total_amount', 0)
+        
+        message = f"👑 **لاگ اقدام ادمین: افزایش موجودی گروهی**\n\n"
+        message += f"👤 **ادمین:** {format_user_info(admin_id)}\n"
+        message += f"💰 **مبلغ به ازای هر کاربر:** {amount:,.0f} تومان\n"
+        message += f"👥 **تعداد کاربران تأثیرپذیر:** {affected_users} نفر\n"
+        message += f"💰 **مجموع مبلغ:** {total_amount:,.0f} تومان\n"
+        message += f"📅 **زمان:** {datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S')}"
+        
+    elif action_type == 'edit':
+        target_user_id = details.get('target_user_id')
+        field = details.get('field')
+        old_value = details.get('old_value')
+        new_value = details.get('new_value')
+        
+        message = f"👑 **لاگ اقدام ادمین: ویرایش اطلاعات کاربر**\n\n"
+        message += f"👤 **ادمین:** {format_user_info(admin_id)}\n"
+        message += f"🎯 **کاربر هدف:** {format_user_info(target_user_id)}\n"
+        message += f"📝 **فیلد ویرایش شده:** {field}\n"
+        message += f"📊 **مقدار قبلی:** {old_value}\n"
+        message += f"📊 **مقدار جدید:** {new_value}\n"
+        message += f"📅 **زمان:** {datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S')}"
+    
+    else:
+        message = f"👑 **لاگ اقدام ادمین**\n\n"
+        message += f"👤 **ادمین:** {format_user_info(admin_id)}\n"
+        message += f"🎯 **عمل:** {action_type}\n"
+        message += f"📋 **جزئیات:** {json.dumps(details, ensure_ascii=False, indent=2)}\n"
+        message += f"📅 **زمان:** {datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S')}"
+    
+    # ارسال به تمام ادمین‌ها
+    for admin_chat_id in ADMIN_CHAT_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_chat_id,
+                text=message,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Failed to send admin action log to admin {admin_chat_id}: {e}")
 # ============================================================
 # --- تابع جدید برای ارسال لاگ خرید به ادمین‌ها ---
 # ============================================================
@@ -790,7 +869,6 @@ def process_receipt_atomic(receipt_id: str, status: str, admin_id: int) -> tuple
     save_pending_receipts(receipts)
     return True, receipt
     
-
 # ============================================================
 # --- توابع مدیریت سیستم رفرال ---
 # ============================================================
@@ -1308,6 +1386,14 @@ async def handle_admin_edit_input(update: Update, context: ContextTypes.DEFAULT_
                 add_transaction(target_user_id, transaction_type, amount_change, 
                                f"تغییر موجودی توسط ادمین (قدیمی: {old_balance:,.0f} تومان)", update.effective_user.id)
             
+            # ارسال لاگ به ادمین‌ها
+            await send_admin_action_log(context, update.effective_user.id, 'edit', {
+                'target_user_id': target_user_id,
+                'field': 'balance',
+                'old_value': f"{old_balance:,.0f} تومان",
+                'new_value': f"{new_balance:,.0f} تومان"
+            })
+            
             await update.message.reply_text(
                 f"✅ موجودی کاربر {format_user_info(target_user_id)} به {new_balance:,.0f} تومان تغییر یافت.\n\n"
                 f"تغییر: {amount_change:+,.0f} تومان",
@@ -1379,6 +1465,14 @@ async def handle_admin_edit_input(update: Update, context: ContextTypes.DEFAULT_
             description = f"تغییر رفرال توسط ادمین {admin_info} (قدیمی: {old_referral if old_referral else 'ندارد'})"
             add_transaction(target_user_id, "admin_adjustment", 0, description, update.effective_user.id)
             
+            # ارسال لاگ به ادمین‌ها
+            await send_admin_action_log(context, update.effective_user.id, 'edit', {
+                'target_user_id': target_user_id,
+                'field': 'referral',
+                'old_value': str(old_referral) if old_referral else 'ندارد',
+                'new_value': str(referred_by) if referred_by else 'ندارد'
+            })
+            
             await update.message.reply_text(
                 f"✅ رفرال دهنده کاربر {format_user_info(target_user_id)} به {referred_by if referred_by else 'هیچ‌کس'} تغییر یافت.\n\n"
                 f"توسط ادمین: {admin_info}",
@@ -1401,6 +1495,14 @@ async def handle_admin_edit_input(update: Update, context: ContextTypes.DEFAULT_
             admin_info = format_user_info(update.effective_user.id, show_copyable=False)
             description = f"ویرایش یادداشت توسط ادمین {admin_info}"
             add_transaction(target_user_id, "admin_adjustment", 0, description, update.effective_user.id)
+            
+            # ارسال لاگ به ادمین‌ها
+            await send_admin_action_log(context, update.effective_user.id, 'edit', {
+                'target_user_id': target_user_id,
+                'field': 'notes',
+                'old_value': get_user_notes(target_user_id),
+                'new_value': new_notes
+            })
             
             await update.message.reply_text(
                 f"✅ یادداشت کاربر {format_user_info(target_user_id)} به‌روزرسانی شد.\n\n"
@@ -1434,6 +1536,13 @@ async def handle_admin_edit_input(update: Update, context: ContextTypes.DEFAULT_
             
             # افزودن به تاریخچه تراکنش‌ها
             add_transaction(target_user_id, "admin_adjustment", amount, f"افزایش موجودی توسط ادمین", update.effective_user.id)
+            
+            # ارسال لاگ به ادمین‌ها
+            await send_admin_action_log(context, update.effective_user.id, 'add', {
+                'target_user_id': target_user_id,
+                'amount': amount,
+                'new_balance': new_balance
+            })
             
             # اطلاع به ادمین
             await update.message.reply_text(
@@ -1853,6 +1962,292 @@ async def referral_earnings_history_admin(update: Update, context: ContextTypes.
             parse_mode="Markdown",
             reply_markup=reply_markup
         )
+
+# ============================================================
+# --- توابع جدید برای /allmembers و /addall ---
+# ============================================================
+
+async def allmembers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """دستور ادمین برای مشاهده لیست تمام کاربران با صفحه‌بندی"""
+    if update.effective_user.id not in ADMIN_CHAT_IDS:
+        await update.message.reply_text("❌ شما دسترسی لازم برای این دستور را ندارید.")
+        return
+    
+    # دریافت صفحه از آرگومان‌ها (در صورت وجود)
+    page = 1
+    if context.args:
+        try:
+            page = int(context.args[0])
+            if page < 1:
+                page = 1
+        except ValueError:
+            page = 1
+    
+    await show_all_users_list(update, context, page)
+
+async def show_all_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1):
+    """نمایش لیست تمام کاربران با صفحه‌بندی"""
+    users = load_users()
+    
+    if not users:
+        await update.message.reply_text("📋 **لیست کاربران**\n\n❌ هیچ کاربری در سیستم ثبت نشده است.")
+        return
+    
+    # صفحه‌بندی
+    items_per_page = 20
+    user_ids = list(users.keys())
+    total_users = len(user_ids)
+    total_pages = (total_users + items_per_page - 1) // items_per_page
+    page = max(1, min(page, total_pages))
+    
+    start_idx = (page - 1) * items_per_page
+    end_idx = min(start_idx + items_per_page, total_users)
+    
+    # ساخت پیام
+    message_text = f"📋 **لیست تمام کاربران**\n\n"
+    message_text += f"📊 **آمار کلی:**\n"
+    message_text += f"• تعداد کل کاربران: {total_users} نفر\n"
+    message_text += f"• صفحه {page} از {total_pages}\n\n"
+    
+    message_text += f"👥 **کاربران (صفحه {page}):**\n"
+    
+    # نمایش کاربران صفحه جاری
+    for i, str_user_id in enumerate(user_ids[start_idx:end_idx], start_idx + 1):
+        user_id = int(str_user_id)
+        user_data = users[str_user_id]
+        
+        balance = user_data.get('balance', 0)
+        services_count = len(user_data.get('services', []))
+        created_at = user_data.get('created_at', 'نامشخص')
+        
+        try:
+            created_date = datetime.datetime.fromisoformat(created_at).strftime("%Y/%m/%d")
+        except:
+            created_date = created_at
+        
+        user_info = f"{format_user_info(user_id, show_copyable=False)}"
+        user_info += f" | 💰{balance:,.0f}ت | 📂{services_count}س | 📅{created_date}"
+        
+        message_text += f"{i}. {user_info}\n"
+    
+    # دکمه‌های صفحه‌بندی
+    keyboard = []
+    
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("◀️ صفحه قبلی", callback_data=f"allmembers_page_{page-1}"))
+    
+    nav_buttons.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="allmembers_page_info"))
+    
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("صفحه بعدی ▶️", callback_data=f"allmembers_page_{page+1}"))
+    
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    
+    # دکمه‌های عملیاتی
+    keyboard.append([
+        InlineKeyboardButton("📥 خروجی Excel", callback_data="export_all_users"),
+        InlineKeyboardButton("💰 افزایش موجودی گروهی", callback_data="addall_start")
+    ])
+    
+    keyboard.append([
+        InlineKeyboardButton("🔄 به‌روزرسانی", callback_data=f"allmembers_page_{page}"),
+        InlineKeyboardButton("🔙 بستن", callback_data="close_allmembers")
+    ])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.message:
+        await update.message.reply_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    elif update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        try:
+            await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception:
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text=message_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+
+async def addall_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """دستور ادمین برای افزایش یا کاهش موجودی گروهی کاربران"""
+    if update.effective_user.id not in ADMIN_CHAT_IDS:
+        await update.message.reply_text("❌ شما دسترسی لازم برای این دستور را ندارید.")
+        return
+    
+    if len(context.args) != 1:
+        await update.message.reply_text(
+            "❌ فرمت دستور:\n`/addall [Amount]`\n\n"
+            "مثال:\n"
+            "`/addall 50000` - افزایش 50,000 تومان به تمام کاربران\n"
+            "`/addall -10000` - کاهش 10,000 تومان از تمام کاربران",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        amount = float(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ مبلغ وارد شده نامعتبر است. لطفاً یک عدد وارد کنید.")
+        return
+    
+    # ذخیره اطلاعات در context برای استفاده در تایید
+    context.user_data['addall_amount'] = amount
+    
+    # نمایش تأیید
+    users = load_users()
+    total_users = len(users)
+    total_amount = amount * total_users
+    
+    message_text = f"⚠️ **تأیید افزایش موجودی گروهی**\n\n"
+    message_text += f"👤 **ادمین:** {format_user_info(update.effective_user.id)}\n"
+    message_text += f"💰 **مبلغ به ازای هر کاربر:** {amount:+,.0f} تومان\n"
+    message_text += f"👥 **تعداد کاربران:** {total_users} نفر\n"
+    message_text += f"💰 **مجموع مبلغ:** {total_amount:+,.0f} تومان\n\n"
+    
+    if amount < 0:
+        message_text += f"⚠️ **هشدار:** شما در حال کاهش موجودی کاربران هستید!\n\n"
+    
+    message_text += f"آیا از انجام این عمل مطمئن هستید؟"
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ بله، تأیید می‌کنم", callback_data="addall_confirm"),
+            InlineKeyboardButton("❌ خیر، لغو", callback_data="addall_cancel")
+        ]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+
+async def addall_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """تأیید و اجرای افزایش موجودی گروهی"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.from_user.id not in ADMIN_CHAT_IDS:
+        await query.answer("❌ شما دسترسی لازم ندارید.", show_alert=True)
+        return
+    
+    amount = context.user_data.get('addall_amount')
+    if amount is None:
+        await query.answer("❌ اطلاعات مبلغ یافت نشد.", show_alert=True)
+        return
+    
+    users = load_users()
+    total_users = len(users)
+    
+    if total_users == 0:
+        await query.answer("❌ هیچ کاربری برای ویرایش وجود ندارد.", show_alert=True)
+        return
+    
+    # آپدیت پیام
+    await query.edit_message_text(
+        f"🔄 در حال افزایش موجودی {total_users} کاربر...\n\n"
+        f"لطفاً منتظر بمانید...",
+        parse_mode="Markdown"
+    )
+    
+    # اجرای افزایش موجودی گروهی
+    affected_users = 0
+    failed_users = 0
+    total_amount_added = 0
+    
+    for str_user_id, user_data in users.items():
+        try:
+            user_id = int(str_user_id)
+            old_balance = user_data.get('balance', 0)
+            new_balance = old_balance + amount
+            
+            # به‌روزرسانی موجودی
+            users[str_user_id]["balance"] = new_balance
+            
+            # افزودن تراکنش به تاریخچه
+            action_type = "افزایش" if amount >= 0 else "کاهش"
+            add_transaction(user_id, "admin_adjustment", amount, 
+                          f"{action_type} موجودی گروهی توسط ادمین", query.from_user.id)
+            
+            affected_users += 1
+            total_amount_added += amount
+            
+            # اطلاع به کاربر (در صورت مثبت بودن مبلغ)
+            if amount > 0:
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=f"💰 موجودی کیف پول شما توسط مدیریت به میزان {amount:,.0f} تومان افزایش یافت.\n\n"
+                             f"💳 موجودی جدید: {new_balance:,.0f} تومان",
+                        reply_markup=MAIN_MENU_REPLY_MARKUP
+                    )
+                except error.Forbidden:
+                    failed_users += 1  # کاربر ربات را بلاک کرده
+                except Exception:
+                    failed_users += 1
+            elif amount < 0:
+                # برای کاهش موجودی، فقط به کاربران خاص اطلاع نمی‌دهیم
+                pass
+                
+        except Exception as e:
+            logger.error(f"Failed to update balance for user {str_user_id}: {e}")
+            failed_users += 1
+    
+    # ذخیره تغییرات
+    save_users(users)
+    
+    # ارسال لاگ به ادمین‌ها
+    await send_admin_action_log(context, query.from_user.id, 'addall', {
+        'amount': amount,
+        'affected_users': affected_users,
+        'failed_users': failed_users,
+        'total_amount': total_amount_added
+    })
+    
+    # نتیجه‌گیری
+    message_text = f"✅ **افزایش موجودی گروهی انجام شد**\n\n"
+    message_text += f"👤 **ادمین:** {format_user_info(query.from_user.id)}\n"
+    message_text += f"💰 **مبلغ به ازای هر کاربر:** {amount:+,.0f} تومان\n"
+    message_text += f"✅ **کاربران موفق:** {affected_users} نفر\n"
+    message_text += f"❌ **کاربران ناموفق:** {failed_users} نفر\n"
+    message_text += f"💰 **مجموع مبلغ تغییر یافته:** {total_amount_added:+,.0f} تومان\n"
+    message_text += f"📅 **زمان:** {datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S')}"
+    
+    keyboard = [
+        [InlineKeyboardButton("📋 مشاهده لیست کاربران", callback_data="allmembers_page_1")],
+        [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_to_main_from_admin")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception:
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=message_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+    
+    # پاک کردن داده‌های موقت
+    context.user_data.pop('addall_amount', None)
+
+async def addall_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """لغو افزایش موجودی گروهی"""
+    query = update.callback_query
+    await query.answer("عملیات لغو شد.")
+    
+    await query.edit_message_text(
+        "❌ افزایش موجودی گروهی لغو شد.",
+        parse_mode="Markdown"
+    )
+    
+    # پاک کردن داده‌های موقت
+    context.user_data.pop('addall_amount', None)
 
 # ============================================================
 # --- توابع API پنل X-UI (سیستم چند سروره) ---
@@ -3852,7 +4247,6 @@ async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TY
     
     return ConversationHandler.END
     
-
 async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """هندلر تأیید رسید توسط ادمین - نسخه بهبودیافته"""
     query = update.callback_query
@@ -4037,6 +4431,13 @@ async def add_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     # افزودن تراکنش به تاریخچه
     add_transaction(user_id, "admin_adjustment", amount, f"افزایش موجودی توسط دستور /add", update.effective_user.id)
     
+    # ارسال لاگ به ادمین‌ها
+    await send_admin_action_log(context, update.effective_user.id, 'add', {
+        'target_user_id': user_id,
+        'amount': amount,
+        'new_balance': new_balance
+    })
+    
     # اطلاع به ادمین
     user_link = format_user_info(user_id)
     await update.message.reply_text(
@@ -4044,7 +4445,7 @@ async def add_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         parse_mode="Markdown"
     )
     
-    # اطلاع به کاربر
+    # اطلاع به کاربر - با مدیریت بهتر خطا
     try:
         await context.bot.send_message(
             chat_id=user_id,
@@ -4053,11 +4454,24 @@ async def add_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
     except error.Forbidden:
         logger.warning(f"User {user_id} blocked the bot, cannot send balance update notification")
-        await update.message.reply_text(f"⚠️ موجودی افزایش یافت اما کاربر {user_link} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.", parse_mode="Markdown")
+        # اطلاع به ادمین که کاربر ربات را بلاک کرده
+        await update.message.reply_text(
+            f"⚠️ موجودی افزایش یافت اما کاربر {user_link} ربات را مسدود کرده و نمی‌توان به او اطلاع داد.",
+            parse_mode="Markdown"
+        )
+    except error.BadRequest as e:
+        logger.error(f"BadRequest when notifying user {user_id}: {e}")
+        if "chat not found" in str(e).lower():
+            await update.message.reply_text(
+                f"⚠️ موجودی افزایش یافت اما چت با کاربر {user_link} یافت نشد (ربات را ترک کرده است).",
+                parse_mode="Markdown"
+            )
     except Exception as e:
         logger.error(f"Failed to notify user {user_id}: {e}")
-        await update.message.reply_text(f"⚠️ کاربر {user_link} پیدا نشد یا خطا در ارسال پیام.", parse_mode="Markdown")
-
+        await update.message.reply_text(
+            f"⚠️ خطا در ارسال اطلاعیه به کاربر {user_link}: {str(e)[:100]}",
+            parse_mode="Markdown"
+        )
 # ============================================================
 # --- دستور ادمین برای ارسال پیام همگانی (Announce) ---
 # ============================================================
@@ -4123,6 +4537,14 @@ async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             report_message += f"و {len(blocked_users) - 10} کاربر دیگر..."
     
     await update.message.reply_text(report_message, parse_mode="Markdown")
+    
+    # ارسال لاگ به ادمین‌ها
+    await send_admin_action_log(context, update.effective_user.id, 'announce', {
+        'message': message_text,
+        'success_count': success_count,
+        'fail_count': fail_count,
+        'blocked_users': len(blocked_users)
+    })
 
 # ============================================================
 # --- باقی هندلرها ---
@@ -4146,6 +4568,7 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data.pop('edit_balance_target', None)
     context.user_data.pop('edit_referral_target', None)
     context.user_data.pop('edit_notes_target', None)
+    context.user_data.pop('addall_amount', None)
     
     if update.message and update.message.text.lower() == "❌ لغو عملیات".lower():
         try: await context.bot.delete_message(chat_id=user_id, message_id=update.message.message_id)
@@ -4528,6 +4951,50 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         page = int(parts[4]) if len(parts) > 4 else 1
         return await referral_earnings_history_admin(update, context, target_user_id, page)
     
+    # هندلرهای جدید برای /allmembers
+    if data.startswith("allmembers_page_"):
+        page = int(data.split("allmembers_page_")[1])
+        return await show_all_users_list(update, context, page)
+    
+    if data == "allmembers_page_info":
+        await query.answer("شماره صفحه جاری", show_alert=False)
+        return
+    
+    if data == "close_allmembers":
+        try:
+            await query.message.delete()
+        except Exception:
+            await query.answer("لیست کاربران بسته شد.")
+        return
+    
+    if data == "export_all_users":
+        await query.answer("⚠️ این قابلیت در حال حاضر در دسترس نیست.", show_alert=True)
+        return
+    
+    if data == "addall_start":
+        context.user_data['addall_amount'] = None
+        await query.answer("لطفاً از دستور /addall استفاده کنید.")
+        await query.edit_message_text(
+            "💰 **افزایش موجودی گروهی**\n\n"
+            "لطفاً از دستور زیر استفاده کنید:\n"
+            "`/addall [Amount]`\n\n"
+            "مثال:\n"
+            "`/addall 50000` - افزایش 50,000 تومان به تمام کاربران\n"
+            "`/addall -10000` - کاهش 10,000 تومان از تمام کاربران",
+            parse_mode="Markdown"
+        )
+        return
+    
+    if data == "addall_confirm":
+        return await addall_confirm_callback(update, context)
+    
+    if data == "addall_cancel":
+        return await addall_cancel_callback(update, context)
+    
+    if data == "back_to_main_from_admin":
+        await send_main_menu(query.from_user.id, context)
+        return
+    
     if data.startswith("transaction_page_info") or data.startswith("service_page_info") or data.startswith("referral_page_info") or data.startswith("earnings_page_info"):
         await query.answer("شماره صفحه جاری", show_alert=False)
         return
@@ -4606,6 +5073,8 @@ def main() -> None:
     # ========== تغییر 1: اضافه کردن هندلرهای اصلی در ابتدا ==========
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("add", add_balance_command))  # دستور ادمین
+    application.add_handler(CommandHandler("addall", addall_command))  # دستور جدید ادمین
+    application.add_handler(CommandHandler("allmembers", allmembers_command))  # دستور جدید ادمین
     application.add_handler(CommandHandler("announce", announce_command))  # دستور ارسال پیام همگانی
     application.add_handler(CommandHandler("check", check_user_profile))  # دستور بررسی پروفایل کاربر
     application.add_handler(CommandHandler("myref", my_referral))  # دستور نمایش لینک رفرال
@@ -4617,107 +5086,98 @@ def main() -> None:
         reply_to_ticket
     ))
     
-    # ========== تغییر 2: هندلرهای دکمه‌های منوی اصلی قبل از مکالمات ==========
-    application.add_handler(MessageHandler(filters.Regex(r"^👤 حساب من$"), my_account))
-    application.add_handler(MessageHandler(filters.Regex(r"^📂 سرویس‌های من$"), my_services))
-    application.add_handler(MessageHandler(filters.Regex(r"^🔗 لینک رفرال$"), my_referral))  # هندلر دکمه لینک رفرال
-    application.add_handler(MessageHandler(filters.Regex(r"^📚 آموزش اتصال$"), connection_tutorials_start))  # هندلر دکمه آموزش اتصال
-    
-    # ========== تغییر 3: سپس هندلرهای مکالمه ==========
-    # مکالمه جدید شارژ کیف پول (کارت به کارت)
+    # مکالمه خرید سرویس جدید
+    purchase_conv_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Text("🛍️ خرید سرویس") & ~filters.Chat(ADMIN_CHAT_IDS), select_server_for_purchase),
+            CallbackQueryHandler(select_service_plan, pattern=r'^SELECT_SERVER_'),
+        ],
+        states={
+            STATE_SELECT_SERVER: [
+                CallbackQueryHandler(select_service_plan, pattern=r'^SELECT_SERVER_'),
+                CallbackQueryHandler(prompt_for_config_name, pattern=r'^SERVICE_DETAILS_PLAN_'),
+                CallbackQueryHandler(prompt_for_config_name, pattern=r'^CONFIRM_PLAN_PURCHASE_'),
+                CallbackQueryHandler(prompt_for_config_name, pattern=r'^CONFIRM_PURCHASE_'),
+                CallbackQueryHandler(finalize_purchase, pattern=r'^CONFIRM_PURCHASE_'),
+            ],
+            STATE_WAITING_FOR_CONFIG_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_config_name),
+            ],
+            STATE_WAITING_FOR_CONFIG_NAME_CONFIRM: [
+                CallbackQueryHandler(prompt_for_config_name, pattern=r'^CONFIRM_PLAN_PURCHASE_'),
+                CallbackQueryHandler(prompt_for_config_name, pattern=r'^CONFIRM_PURCHASE_'),
+                CallbackQueryHandler(finalize_purchase, pattern=r'^CONFIRM_PURCHASE_'),
+                CallbackQueryHandler(back_to_config_name_prompt, pattern=r'^back_to_config_name_prompt'),
+            ],
+        },
+        fallbacks=[
+            MessageHandler(filters.Text("❌ لغو عملیات"), cancel_conversation),
+            CommandHandler("cancel", cancel_conversation),
+        ],
+        allow_reentry=True
+    )
+    application.add_handler(purchase_conv_handler)
+
+    # مکالمه شارژ کیف پول (کارت به کارت)
     wallet_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^💰 شارژ کیف پول$"), wallet_start)],
+        entry_points=[MessageHandler(filters.Text("💰 شارژ کیف پول") & ~filters.Chat(ADMIN_CHAT_IDS), wallet_start)],
         states={
             STATE_WAITING_FOR_RECEIPT: [
                 MessageHandler(filters.PHOTO, wallet_receive_receipt),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, wallet_receive_receipt)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, wallet_receive_receipt),
             ],
-            STATE_GET_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, wallet_receive_amount)]
+            STATE_GET_AMOUNT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, wallet_receive_amount),
+            ],
         },
         fallbacks=[
-            CommandHandler("cancel", cancel_conversation), 
-            MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation)
+            MessageHandler(filters.Text("❌ لغو عملیات"), cancel_conversation),
+            CommandHandler("cancel", cancel_conversation),
         ],
+        allow_reentry=True
     )
+    application.add_handler(wallet_conv_handler)
 
+    # مکالمه پشتیبانی
     support_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^📞 پشتیبانی$"), support_start)],
+        entry_points=[MessageHandler(filters.Text("📞 پشتیبانی") & ~filters.Chat(ADMIN_CHAT_IDS), support_start)],
         states={
             STATE_GET_TICKET: [
-                MessageHandler(
-                    filters.ALL & ~filters.COMMAND & filters.ChatType.PRIVATE, 
-                    support_receive_message
-                )
-            ]
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_conversation), 
-            MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation)
-        ],
-    )
-
-    purchase_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^🛍️ خرید سرویس$"), select_server_for_purchase)],
-        states={
-            STATE_SELECT_SERVER: [
-                CallbackQueryHandler(select_service_plan, pattern="^SELECT_SERVER_"),
-                MessageHandler(filters.Regex(r"^🛍️ خرید سرویس$"), select_server_for_purchase),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, support_receive_message),
+                MessageHandler(filters.PHOTO, support_receive_message),
+                MessageHandler(filters.VIDEO, support_receive_message),
+                MessageHandler(filters.Document.ALL, support_receive_message),
             ],
         },
         fallbacks=[
-            CommandHandler("cancel", cancel_conversation), 
-            MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation),
+            MessageHandler(filters.Text("❌ لغو عملیات"), cancel_conversation),
+            CommandHandler("cancel", cancel_conversation),
         ],
+        allow_reentry=True
     )
-
-    config_name_conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(prompt_for_config_name, pattern="^CONFIRM_PURCHASE_|^CONFIRM_PLAN_PURCHASE_")], 
-        states={
-            STATE_WAITING_FOR_CONFIG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_config_name), CallbackQueryHandler(cancel_conversation, pattern="^cancel_conv_select_server")],
-            STATE_WAITING_FOR_CONFIG_NAME_CONFIRM: [CallbackQueryHandler(finalize_purchase, pattern="^CONFIRM_PURCHASE_|^CONFIRM_PLAN_PURCHASE_"), CallbackQueryHandler(back_to_config_name_prompt, pattern="^back_to_config_name_prompt")]
-        },
-        fallbacks=[CommandHandler("cancel", cancel_conversation), MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation)],
-    )
-    
-    renewal_conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(prompt_renew_service, pattern="^PROMPT_RENEW_")],
-        states={
-            STATE_WAITING_FOR_RENEWAL_CONFIRM: [CallbackQueryHandler(finalize_renewal, pattern="^RENEW_SELECT_")]
-        },
-        fallbacks=[CommandHandler("cancel", cancel_conversation), MessageHandler(filters.Regex(r"^❌ لغو عملیات$"), cancel_conversation)],
-    )
-
-    application.add_error_handler(error_handler)
-    
-    # ========== تغییر 4: اضافه کردن مکالمات بعد از هندلرهای اصلی ==========
-    application.add_handler(wallet_conv_handler)
     application.add_handler(support_conv_handler)
-    application.add_handler(purchase_conv_handler) 
-    application.add_handler(config_name_conv_handler) 
-    application.add_handler(renewal_conv_handler)
+
+    # سایر هندلرهای پیام
+    application.add_handler(MessageHandler(filters.Text("👤 حساب من") & ~filters.Chat(ADMIN_CHAT_IDS), my_account))
+    application.add_handler(MessageHandler(filters.Text("📂 سرویس‌های من") & ~filters.Chat(ADMIN_CHAT_IDS), my_services))
+    application.add_handler(MessageHandler(filters.Text("🔗 لینک رفرال") & ~filters.Chat(ADMIN_CHAT_IDS), my_referral))
+    application.add_handler(MessageHandler(filters.Text("📚 آموزش اتصال") & ~filters.Chat(ADMIN_CHAT_IDS), connection_tutorials_start))
     
-    # هندلر یکپارچه برای دریافت ورودی‌های ویرایش ادمین
+    # هندلر برای دریافت ورودی‌های ویرایش ادمین
     application.add_handler(MessageHandler(
-        filters.TEXT & filters.Chat(ADMIN_CHAT_IDS) & ~filters.COMMAND,
+        filters.Chat(ADMIN_CHAT_IDS) & filters.TEXT & ~filters.COMMAND,
         handle_admin_edit_input
     ))
-    
-    # هندلرهای دکمه‌های شیشه‌ای
-    application.add_handler(CallbackQueryHandler(back_to_select_server, pattern="^back_to_select_server$"))
-    application.add_handler(CallbackQueryHandler(back_to_tutorial_categories, pattern="^back_to_tutorial_categories$"))
-    
-    # هندلر جامع برای تمام دکمه‌های شیشه‌ای
-    application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^SERVICE_DETAILS_|SHOW_SUB_LINK_|back_to_main_from_services|back_to_services|OPEN_MY_SERVICES|approve_receipt_|reject_receipt_|REFERRAL_HISTORY_|back_to_referral_link|TUTORIAL_CAT_|TUTORIAL_APP_|back_to_main_from_tutorial|add_balance_|copy_user_id_|refresh_profile_|transaction_details_|service_details_|edit_user_|edit_balance_|edit_referral_|edit_notes_|investigate_user_|register_user_|full_referral_list_|referral_earnings_history_|close_profile|transaction_page_info|service_page_info|referral_page_info|earnings_page_info"))
-    
-    application.add_handler(
-        MessageHandler(
-            filters.Chat(chat_id=ADMIN_CHAT_IDS) & filters.REPLY & filters.TEXT,
-            reply_to_ticket
-        )
-    )
 
-    logger.info("Bot started and polling...")
-    application.run_polling(poll_interval=1.0)
+    # هندلر جامع برای دکمه‌های شیشه‌ای
+    application.add_handler(CallbackQueryHandler(button_callback_handler))
 
-if __name__ == '__main__':
+    # هندلر خطا
+    application.add_error_handler(error_handler)
+
+    # شروع ربات
+    logger.info("Bot is starting...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
     main()
