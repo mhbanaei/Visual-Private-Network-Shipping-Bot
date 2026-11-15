@@ -27,17 +27,20 @@
 # 25. ADDED: /addall command for bulk balance adjustment
 # 26. ADDED: Admin action logging for /add and /addall commands
 
+import db as storage
 import logging
+import html
 import requests
 import json
 import os
 import re 
 import asyncio
+import io
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ConversationHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, Bot, error
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, Bot, error, InputFile
 import uuid 
 import base64 
 import time
@@ -55,28 +58,12 @@ logger = logging.getLogger(__name__)
 # ==========================================================
 
 # 🌟 تنظیمات چند سرور (دست نخورده)
-SERVERS_CONFIG = {
-    "Server_1": {
-        "display_name": "Server 🟣",
-        "xui_panel_url": "xui_panel_url",
-        "xui_username": "xui_username",
-        "xui_password": "xui_password",
-        "login_path": "login_path",
-        "inbound_id": 1,
-        "server_address": "server_address",
-        "server_port_subscription": 2096,
-        "server_port_client": 8080,
-        "base_path": "/base_path",
-        "subscribe_path": "/subscribe/",
-        "active": 1,   # 🌟 1 = قابل خرید | 0 = ظرفیت پر
-        "tamdid": 1    # 🌟 1 = قابل تمدید | 0 = تمدید غیرفعال
-    }
-}
+from servers import SERVERS_CONFIG
 
 # تنظیمات اولیه 
-BOT_TOKEN = "BOT_TOKEN"
-ADMIN_CHAT_IDS = [6659266132, 8210063313]
-CARD_NUMBER = "6219861830494810"  # شماره کارت برای واریز
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+ADMIN_CHAT_IDS = [123456789, 987654321]
+CARD_NUMBER = "0000000000000000"  # شماره کارت برای واریز
 
 # ⚠️ تنظیمات پروتکل VMESS
 def get_protocol_settings(server_key):
@@ -100,6 +87,21 @@ def get_protocol_settings(server_key):
 # --- تنظیمات رفرال ---
 REFERRAL_PERCENT = 20  # درصد رفرال (مثلاً 20٪)
 REFERRAL_MIN_AMOUNT = 10000  # حداقل مبلغ شارژ برای احتساب رفرال (تومان)
+
+
+def user_referral_percent(user_id) -> float:
+    """درصد رفرال مؤثر کاربر: مقدار اختصاصی از پنل ادمین و در غیر این صورت مقدار پیش‌فرض"""
+    custom = None
+    try:
+        custom = (load_users().get(str(user_id)) or {}).get("referral_percent")
+    except Exception:
+        custom = None
+    if custom is not None and custom != "":
+        try:
+            return float(custom)
+        except (TypeError, ValueError):
+            pass
+    return float(REFERRAL_PERCENT)
 
 # --- وضعیت‌های Conversation ---
 STATE_GET_AMOUNT = 1
@@ -129,17 +131,6 @@ TRANSACTION_HISTORY_FILE = 'transaction_history.json'  # فایل جدید بر�
 SERVICES = {
     "FREE_TRIAL": {"label": "🆓 سرویس تست رایگان", "users": 1, "volume": "1 گیگ", "days": 1, "price_toman": 0, 
                    "description": "سرویس تست رایگان - فقط یک بار برای هر کاربر", "renewable": False},
-    "Nano_Lite": {"label": "نانو لایت", "users": 2, "volume": "10 گیگ", "days": 10, "price_toman": 35000, "description": "برای استفاده سبک مثل پیام‌رسان و مرور روزانه.", "renewable": True},
-    "Pint_Lite": {"label": "پینت لایت", "users": 2, "volume": "30 گیگ", "days": 20, "price_toman": 69000, "description": "مناسب کاربران نیمه‌فعال و شبکه‌های اجتماعی.", "renewable": True},
-    "Standard": {"label": "استاندارد", "users": 2, "volume": "50 گیگ", "days": 30, "price_toman": 89000, "description": "تعادل عالی بین سرعت.", "renewable": True},
-    "Smart_Online": {"label": "اسمارت آنلاین", "users": 2, "volume": "100 گیگ", "days": 30, "price_toman": 129000, "description": "محبوب میان کاربران حرفه‌ای ایرانی.", "renewable": True},
-    "Pro_Plus": {"label": "پرو پلاس +", "users": 3, "volume": "200 گیگ", "days": 30, "price_toman": 179000, "description": "انتخاب همیشگی برای فریلنسرها و گیمرها.", "renewable": True},
-    "Family": {"label": "خانواده", "users": 3, "volume": "500 گیگ", "days": 30, "price_toman": 379000, "description": "طراحی شده برای خانواده یا گروه کاری کوچک.", "renewable": True},
-    "Titanium": {"label": "تیتانیوم", "users": 4, "volume": "700 گیگ", "days": 30, "price_toman": 419000, "description": "تعادل هوشمند بین ترافیک زیاد و کنترل کیفیت.", "renewable": True},
-    "VIP": {"label": "VIP", "users": 5, "volume": "900 گیگ", "days": 30, "price_toman": 459000, "description": "مخصوص یوزرهای دائم آنلاین و پرمصرف.", "renewable": True},
-    "VIP_Plus": {"label": "VIP_Plus", "users": 5, "volume": "1000 گیگ", "days": 30, "price_toman": 599000, "description": "سطح بالای امنیت، اختصاصی مدیران و حرفه‌ای‌ها.", "renewable": True},
-    "Organizational": {"label": "سازمانی", "users": 5, "volume": "2500 گیگ", "days": 30, "price_toman": 749000, "description": "انتخاب اقتصادی برای تیم‌ها و سازمان‌ها.", "renewable": True},
-    "Unlimited": {"label": "نامحدود + هدیه", "users": 2, "volume": "9999 گیگ", "days": 30, "price_toman": 899000, "description": "IP ثابت آلمان، سرعت اختصاصی.", "renewable": True},
 }
 
 # --- دکمه‌های منوی اصلی ---
@@ -152,196 +143,270 @@ MAIN_MENU_KEYBOARD = [
 MAIN_MENU_REPLY_MARKUP = ReplyKeyboardMarkup(MAIN_MENU_KEYBOARD, resize_keyboard=True)
 
 # ============================================================
+# --- قیمت‌گذاری سفارشی (خرید بی‌نهایت / حجمی) ---
+# ============================================================
+UNLIMITED_PRICE_PER_USER = 400000      # سرویس بی‌نهایت: هر کاربر ۴۰۰ هزار تومان
+VOLUME_PRICE_PER_GB = 4000             # سرویس حجمی: هر گیگ ۴ هزار تومان
+VOLUME_MAX_GB = 100                    # حداکثر حجم قابل خرید
+CUSTOM_MAX_USERS = 10                  # حداکثر کاربر (بر اساس IP)
+CUSTOM_USER_MULTIPLIER = 1.5           # ضریب تصاعدی قیمت برای هر کاربر اضافه
+CUSTOM_DAYS = 30                       # اعتبار سرویس سفارشی
+MAX_SUBSCRIPTION_DAYS = 30              # سقف اعتبار هر سرویس پس از هر تمدید (۳۰ روز)
+STATE_CUSTOM_BUILD = 15                # وضعیت ساخت سرویس سفارشی
+CUSTOM_PLANS = {}                      # پلن‌های سفارشی ساخته‌شده در همین اجرا
+
+# ============================================================
 # --- محتوای آموزشی برنامه‌های مختلف ---
 # ============================================================
 
+# -*- coding: utf-8 -*-
+# محتوای بخش آموزش — محور آموزش: هسته V2Ray و برنامه‌های پشتیبان آن
+
 CONNECTION_TUTORIALS = {
-    # Hiddify - Android
-    "hiddify_android": {
-        "title": "📱 آموزش اتصال با Hiddify (Android)",
-        "steps": [
-            "1. ابتدا برنامه Hiddify را از فروشگاه Google Play دانلود و نصب کنید.",
-            "1.1 https://play.google.com/store/apps/details?id=app.hiddify.com&hl=en",
-            "2. برنامه را باز کرده و روی علامت ➕ در  صفحه کلیک کنید.",
-            "3. گزینه 'Add from Clipboard' یا 'وارد کردن از کلیپ‌برد' را انتخاب کنید.",
-            "4. لینک اشتراک خود را از ربات کپی کرده و در این قسمت paste کنید.",
-            "5. روی 'Add' کلیک کنید تا کانفیگ اضافه شود.",
-            "6. حالا روی دکمه روشن/خاموش (🔘) در کنار کانفیگ خود کلیک کنید تا اتصال برقرار شود.",
-            "",
-            "📌 نکات مهم:",
-            "• این برنامه به صورت خودکار بهترین پروتکل را انتخاب می‌کند.",
-            "• برای قطع اتصال، دوباره روی دکمه روشن/خاموش کلیک کنید."
-        ]
-    },
-    
-    # Hiddify - iOS
-    "hiddify_ios": {
-        "title": "📱 آموزش اتصال با Hiddify (iOS)",
-        "steps": [
-            "1. ابتدا برنامه Hiddify را از فروشگاه App Store دانلود و نصب کنید.",
-            "1.1 https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532",
-            "2. برنامه را باز کرده و روی علامت ➕ در  صفحه کلیک کنید.",
-            "3. گزینه 'Add from Clipboard' یا 'وارد کردن از کلیپ‌برد' را انتخاب کنید.",
-            "4. لینک اشتراک خود را از ربات کپی کرده و در این قسمت paste کنید.",
-            "5. روی 'Add' کلیک کنید تا کانفیگ اضافه شود.",
-            "6. حالا روی دکمه روشن/خاموش (🔘) در کنار کانفیگ خود کلیک کنید تا اتصال برقرار شود.",
-            "",
-            "📌 نکات مهم:",
-            "• این برنامه کاملاً رایگان است.",
-            "",
-            "• این برنامه به صورت خودکار بهترین پروتکل را انتخاب می‌کند.",
-            "• برای قطع اتصال، دوباره روی دکمه روشن/خاموش کلیک کنید."
-        ]
-    },
-    
-    # V2rayNG - Android
     "v2rayng_android": {
         "title": "📱 آموزش اتصال با V2rayNG (Android)",
+        "category": "android",
         "steps": [
+            "🔧 هسته: V2Ray (پروتکل VLESS/VMess)",
+            "💵 هزینه: کاملاً رایگان",
+            "✅ کانفیگ‌های پشتیبانی‌شده: VLESS، VMess، Trojan، Shadowsocks، SOCKS و لینک اشتراک (Subscription)",
+            "",
             "1. برنامه V2rayNG را از لینک زیر دانلود کنید:",
             "https://github.com/2dust/v2rayNG/releases/download/1.10.26/v2rayNG_1.10.26_universal.apk",
             "(آخرین نسخه APK را دانلود و نصب کنید)",
             "",
             "2. برنامه را باز کرده و روی علامت ➕ در بالا سمت راست کلیک کنید.",
-            "3. لینک اشتراک خود را از ربات کپی کرده ",
-            "4. گزینه 'Import config from clipboard' را انتخاب کنید.",
-            "5. حالا کانفیگ شما در لیست ظاهر می‌شود. روی آن کلیک کنید.",
-            "6. در صفحه باز شده، دکمه V را در پایین صفحه فشار دهید تا اتصال برقرار شود.",
+            "3. گزینه 'Import config from clipboard' را انتخاب کنید.",
+            "4. لینک کانفیگ یا لینک اشتراک خود را از ربات کپی کرده و paste کنید.",
+            "5. کانفیگ در لیست ظاهر می‌شود؛ روی آن کلیک کنید.",
+            "6. دکمه V در پایین صفحه را فشار دهید تا اتصال برقرار شود.",
             "7. برای قطع اتصال، دوباره روی دکمه V کلیک کنید.",
             "",
             "📌 نکات مهم:",
-            "• این برنامه کاملاً رایگان است.",
-            "",
-            "⚠️ توجه: اگر کانفیگ کار نکرد، مطمئن شوید تاریخ دستگاه شما درست باشد."
-        ]
+            "• تاریخ و ساعت دستگاه باید دقیق باشد، وگرنه اتصال برقرار نمی‌شود.",
+            "• در صورت خطا، برنامه را یکبار ببندید و مجدداً باز کنید.",
+        ],
     },
-    
-    # V2Box - iOS
-    "v2box_ios": {
-        "title": "📱 آموزش اتصال با V2Box (iOS)",
+    "v2raytun_android": {
+        "title": "📱 آموزش اتصال با V2RayTun (Android)",
+        "category": "android",
         "steps": [
-            "1. برنامه V2Box را از App Store دانلود و نصب کنید.",
-            "1.1 https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690",
+            "🔧 هسته: V2Ray (نسخه جدید با پشتیبانی از همه پروتکل‌ها)",
+            "💵 هزینه: رایگان",
+            "✅ کانفیگ‌های پشتیبانی‌شده: VLESS، VMess، Trojan، Shadowsocks، WireGuard و لینک اشتراک",
             "",
-            "2. لینک اشتراک خود را از ربات کپی کرده",
-            "3. برنامه را باز کرده و روی علامت ➕ در بالا سمت راست کلیک کنید.",
-            "4. گزینه 'Import from Clipboard' را انتخاب کنید.",
-            "5. لینک اشتراک خود را از ربات کپی کرده و در این قسمت paste کنید.",
-            "6. حالا کانفیگ شما در لیست ظاهر می‌شود. روی آن کلیک کنید تا انتخاب شود.",
-            "7. روی دکمه 'Connect' در پایین صفحه کلیک کنید.",
-            "8. اگر پیام 'VPN Configuration' ظاهر شد، روی 'Allow' کلیک کنید.",
-            "9. حالا باید به اینترنت متصل شوید.",
+            "1. برنامه V2RayTun را از Google Play نصب کنید.",
+            "2. برنامه را باز کرده و روی ➕ کلیک کنید.",
+            "3. گزینه 'Import from clipboard' را بزنید.",
+            "4. لینک اشتراک یا لینک مستقیم کانفیگ را paste کنید.",
+            "5. دکمه اتصال را روشن کنید و درخواست VPN را Allow کنید.",
             "",
             "📌 نکات مهم:",
-            "• این برنامه کاملاً رایگان است.",
-            "",
-            "⚠️ مشکل احتمالی: اگر اتصال برقرار نشد، برنامه را یکبار بسته و مجدداً باز کنید."
-        ]
+            "• برای به‌روزرسانی خودکار کانفیگ‌ها، از لینک اشتراک استفاده کنید.",
+            "• اگر لیست کانفیگ‌ها خالی ماند، یکبار Update را بزنید.",
+        ],
     },
-    
-    # V2rayN - Windows
+    "v2box_ios": {
+        "title": "📱 آموزش اتصال با V2Box (iOS)",
+        "category": "ios",
+        "steps": [
+            "🔧 هسته: V2Ray (VLESS/VMess/Trojan)",
+            "💵 هزینه V2Box: رایگان — نسخه iOS در App Store رایگان است و برای استفاده کامل ممکن است خرید درون‌برنامه‌ای (In-App Purchase) داشته باشد.",
+            "✅ کانفیگ‌های پشتیبانی‌شده: VLESS، VMess، Trojan، Shadowsocks، SOCKS، Subscription",
+            "",
+            "1. برنامه V2Box را از App Store دانلود و نصب کنید:",
+            "https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690",
+            "",
+            "2. لینک اشتراک یا لینک کانفیگ را از ربات کپی کنید.",
+            "3. برنامه را باز کرده و روی علامت ➕ در بالا سمت راست کلیک کنید.",
+            "4. گزینه 'Import from Clipboard' را انتخاب کنید.",
+            "5. لینک را paste کنید و کانفیگ را انتخاب کنید.",
+            "6. روی دکمه 'Connect' در پایین صفحه کلیک کنید.",
+            "7. اگر پیام 'VPN Configuration' ظاهر شد، روی 'Allow' کلیک کنید.",
+            "",
+            "📌 نکات مهم:",
+            "• اگر اتصال برقرار نشد، برنامه را ببندید و دوباره باز کنید.",
+            "• برای حذف تبلیغات/امکانات بیشتر، نسخه Pro قابل خرید است.",
+        ],
+    },
+    "v2raytun_ios": {
+        "title": "📱 آموزش اتصال با V2RayTun (iOS)",
+        "category": "ios",
+        "steps": [
+            "🔧 هسته: V2Ray",
+            "💵 هزینه: رایگان",
+            "✅ کانفیگ‌های پشتیبانی‌شده: VLESS، VMess، Trojan، Shadowsocks، WireGuard، Subscription",
+            "",
+            "1. برنامه V2RayTun را از App Store نصب کنید.",
+            "2. روی ➕ بزنید و 'Import from clipboard' را انتخاب کنید.",
+            "3. لینک اشتراک یا کانفیگ را paste کنید.",
+            "4. اتصال را روشن کنید و اجازه VPN را بدهید.",
+            "",
+            "📌 نکات مهم:",
+            "• V2RayTun و V2Box هر دو هسته V2Ray دارند؛ اگر یکی مشکل داشت، دیگری را امتحان کنید.",
+        ],
+    },
+    "hiddify_android": {
+        "title": "📱 آموزش اتصال با Hiddify (Android)",
+        "category": "android",
+        "steps": [
+            "🔧 هسته: چندگانه (V2Ray/Xray + Sing-box)",
+            "💵 هزینه: رایگان",
+            "✅ کانفیگ‌های پشتیبانی‌شده: VLESS، VMess، Trojan، Shadowsocks، Hysteria، TUIC و لینک اشتراک",
+            "",
+            "1. برنامه Hiddify را از Google Play نصب کنید:",
+            "https://play.google.com/store/apps/details?id=app.hiddify.com&hl=en",
+            "2. برنامه را باز کرده و روی علامت ➕ کلیک کنید.",
+            "3. گزینه 'Add from Clipboard' را انتخاب کنید.",
+            "4. لینک اشتراک خود را paste کنید و Add را بزنید.",
+            "5. دکمه روشن/خاموش کنار کانفیگ را فعال کنید.",
+            "",
+            "📌 نکات مهم:",
+            "• این برنامه خودکار بهترین پروتکل را انتخاب می‌کند.",
+        ],
+    },
+    "hiddify_ios": {
+        "title": "📱 آموزش اتصال با Hiddify (iOS)",
+        "category": "ios",
+        "steps": [
+            "🔧 هسته: چندگانه (V2Ray/Xray + Sing-box)",
+            "💵 هزینه: رایگان",
+            "✅ کانفیگ‌های پشتیبانی‌شده: VLESS، VMess، Trojan، Shadowsocks، Hysteria، TUIC و لینک اشتراک",
+            "",
+            "1. برنامه Hiddify را از App Store نصب کنید:",
+            "https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532",
+            "2. روی ➕ بزنید و 'Add from Clipboard' را انتخاب کنید.",
+            "3. لینک اشتراک را paste کرده و Add را بزنید.",
+            "4. دکمه روشن/خاموش کنار کانفیگ را فعال کنید.",
+        ],
+    },
     "v2rayn_windows": {
         "title": "💻 آموزش اتصال با V2rayN (Windows)",
+        "category": "windows",
         "steps": [
+            "🔧 هسته: V2Ray/Xray",
+            "💵 هزینه: رایگان",
+            "✅ کانفیگ‌های پشتیبانی‌شده: VLESS، VMess، Trojan، Shadowsocks، Subscription",
+            "",
             "1. برنامه V2rayN را از لینک زیر دانلود کنید:",
             "https://github.com/2dust/v2rayN/releases/download/7.16.6/v2rayN-windows-64.zip",
-            "(فایل v2rayN.zip را دانلود و extract کنید)",
-            "",
-            "2. وارد پوشه ای که فایل رو دانلود کردید بشید و فایل رو Extract کنید",
-            "3. برنامه رو بازکنید و پیش نیاز های آن را نصب نمایید",
-            "4. لینک اشتراک خود را از ربات کپی کرده",
-            "5. بر روی برنامه کلیک کنید و با استفاده کلید واژه CTRL+V کانفیگ خود را انتقال بدید",
-            "6. برای متصل شدن از بخش System Proxy  که در پایین برنامه قرار دارد set System Proxy را انتخاب کنید",
-            "7. برای قطع کردن سرویس از بخش System Proxy  که در پایین برنامه قرار دارد Clear System Proxy را انتخاب کنید",
-            "",
-        ]
+            "2. فایل ZIP را Extract کنید و برنامه را اجرا کنید.",
+            "3. پیش‌نیازهای برنامه (در صورت نمایش) را نصب کنید.",
+            "4. لینک کانفیگ را کپی کرده و در برنامه با CTRL+V وارد کنید.",
+            "5. از بخش System Proxy گزینه 'Set System Proxy' را بزنید.",
+            "6. برای قطع اتصال، 'Clear System Proxy' را انتخاب کنید.",
+        ],
     },
-    
-    # Hiddify - Windows
     "hiddify_windows": {
         "title": "💻 آموزش اتصال با Hiddify (Windows)",
+        "category": "windows",
         "steps": [
-            "1. برنامه Hiddify برای Windows را از لینک زیر دانلود کنید:",
+            "🔧 هسته: چندگانه (V2Ray/Xray + Sing-box)",
+            "💵 هزینه: رایگان",
+            "✅ کانفیگ‌های پشتیبانی‌شده: VLESS، VMess، Trojan، Shadowsocks، Hysteria، TUIC، Subscription",
+            "",
+            "1. برنامه Hiddify را از لینک زیر دانلود کنید:",
             "https://github.com/hiddify/hiddify-next/releases/latest/download/Hiddify-Windows-Setup-x64.exe",
-            "(فایل Hiddify.Windows.Setup.exe را دانلود کنید)",
+            "2. برنامه را نصب و باز کنید.",
+            "3. روی ➕ بزنید و 'Add from Clipboard' را انتخاب کنید.",
+            "4. لینک اشتراک را paste کنید و Add را بزنید.",
+            "5. دکمه روشن/خاموش کنار کانفیگ را فعال کنید.",
             "",
-            "2. برنامه را باز کرده و روی علامت ➕ در  صفحه کلیک کنید.",
-            "3. گزینه 'Add from Clipboard' یا 'وارد کردن از کلیپ‌برد' را انتخاب کنید.",
-            "4. لینک اشتراک خود را از ربات کپی کرده و در این قسمت paste کنید.",
-            "5. روی 'Add' کلیک کنید تا کانفیگ اضافه شود.",
-            "6. حالا روی دکمه روشن/خاموش (🔘) در کنار کانفیگ خود کلیک کنید تا اتصال برقرار شود.",
-            "",
-            "⚠️ نکته: برای عملکرد بهتر، آنتی‌ویروس را موقتاً غیرفعال کنید."
-        ]
+            "⚠️ نکته: برای عملکرد بهتر، آنتی‌ویروس را موقتاً غیرفعال کنید.",
+        ],
     },
-    
-    # آموزش کلی برای همه
     "general_tips": {
         "title": "📌 نکات کلی و عیب‌یابی",
+        "category": "tips",
         "steps": [
-            "🔹 **مشکلات رایج و راه‌حل‌ها:**",
+            "🔹 مشکلات رایج و راه‌حل‌ها:",
             "",
-            "1. **کانفیگ کار نمی‌کند:**",
+            "1. کانفیگ کار نمی‌کند:",
             "   • تاریخ و ساعت دستگاه خود را بررسی کنید (باید دقیق باشد).",
             "   • کانفیگ منقضی نشده باشد.",
             "   • حجم کانفیگ تمام نشده باشد.",
             "",
-            "2. **سرعت کم است:**",
-            #"   • سرور دیگری را امتحان کنید.",
+            "2. سرعت کم است:",
             "   • موقعیت جغرافیایی خود را بررسی کنید.",
             "   • از شبکه اینترنت دیگری تست کنید.",
             "",
-            "3. **قطع و وصل می‌شود:**",
-            "   • تنظیمات Battery Optimization را برای برنامه غیرفعال کنید.",
+            "3. قطع و وصل می‌شود:",
             "   • در Android: Settings > Apps > [App Name] > Battery > Unrestricted",
             "   • از شبکه پایدارتری استفاده کنید.",
             "",
-            "4. **برنامه crash می‌کند:**",
+            "4. برنامه crash می‌کند:",
             "   • برنامه را حذف و مجدداً نصب کنید.",
             "   • از آخرین نسخه برنامه استفاده کنید.",
-            "   • حافظه دستگاه را خالی کنید.",
             "",
-            "5. **ایرانسل/همراه اول فیلتر کرده:**",
-            "   • با پشتیبانی تماس بگیرید.",
+            "5. اگر مشکل حل نشد، از دکمه '📞 پشتیبانی' استفاده کنید.",
+        ],
+    },
+    "supported_apps": {
+        "title": "📋 برنامه‌های پشتیبانی‌شده",
+        "category": "tips",
+        "steps": [
+            "این سرویس با هسته V2Ray کار می‌کند و کانفیگ‌های VLESS/VMess/Trojan قابل استفاده در این برنامه‌ها هستند:",
             "",
-            "🔹 **پشتیبانی:**",
-            "اگر مشکلتان حل نشد، از دکمه '📞 پشتیبانی' استفاده کنید."
-        ]
-    }
+            "🔹 Android:",
+            "• V2rayNG — رایگان",
+            "• V2RayTun — رایگان",
+            "• Hiddify — رایگان",
+            "• NekoBox — رایگان",
+            "• v2rayNG (نسخه‌های فورک) — رایگان",
+            "",
+            "🔹 iOS:",
+            "• V2Box — رایگان (با خرید درون‌برنامه‌ای اختیاری)",
+            "• V2RayTun — رایگان",
+            "• Hiddify — رایگان",
+            "• Streisand — رایگان",
+            "• Shadowrocket — پولی (خرید از App Store)",
+            "",
+            "🔹 Windows:",
+            "• V2rayN — رایگان",
+            "• Hiddify — رایگان",
+            "• Nekoray — رایگان",
+            "",
+            "🔹 macOS:",
+            "• V2Box — رایگان",
+            "• V2rayU — رایگان",
+            "• Hiddify — رایگان",
+            "",
+            "✅ همه این برنامه‌ها لینک اشتراک (Subscription) را پشتیبانی می‌کنند؛ کافی است لینک اشتراک ربات را وارد کنید تا کانفیگ خودکار اضافه شود.",
+        ],
+    },
 }
-
-# ============================================================
-# --- ساختار منوی آموزش ---
-# ============================================================
 
 TUTORIAL_CATEGORIES = {
     "android": {
         "title": "📱 آموزش برای Android",
         "apps": [
-            {"name": "Hiddify (توصیه شده)", "key": "hiddify_android"},
-            {"name": "V2rayNG", "key": "v2rayng_android"},
-        ]
+            {"name": "V2rayNG (توصیه شده)", "key": "v2rayng_android"},
+            {"name": "V2RayTun", "key": "v2raytun_android"},
+            {"name": "Hiddify", "key": "hiddify_android"},
+        ],
     },
     "ios": {
         "title": "📱 آموزش برای iOS",
         "apps": [
-            {"name": "Hiddify (توصیه شده)", "key": "hiddify_ios"},
-            {"name": "V2Box", "key": "v2box_ios"},
-        ]
+            {"name": "V2Box (توصیه شده)", "key": "v2box_ios"},
+            {"name": "V2RayTun", "key": "v2raytun_ios"},
+            {"name": "Hiddify", "key": "hiddify_ios"},
+        ],
     },
     "windows": {
         "title": "💻 آموزش برای Windows",
         "apps": [
-            {"name": "Hiddify (توصیه شده)", "key": "hiddify_windows"},
-            {"name": "V2rayN", "key": "v2rayn_windows"},
-        ]
+            {"name": "V2rayN (توصیه شده)", "key": "v2rayn_windows"},
+            {"name": "Hiddify", "key": "hiddify_windows"},
+        ],
     },
     "tips": {
         "title": "📌 نکات کلی و عیب‌یابی",
         "apps": [
+            {"name": "برنامه‌های پشتیبانی‌شده", "key": "supported_apps"},
             {"name": "مشکلات رایج و راه‌حل", "key": "general_tips"},
-        ]
-    }
+        ],
+    },
 }
 
 # دیکشنری برای نگهداری Cookie هر سرور
@@ -376,19 +441,9 @@ async def send_main_menu(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 def load_users() -> dict:
-    if not os.path.exists(USERS_FILE):
-        return {}
-    try:
-        with open(USERS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (IOError, json.JSONDecodeError):
-        logger.error(f"Error loading {USERS_FILE}. Returning empty dict.")
-        return {}
-
+    return storage.load_users()
 def save_users(users: dict):
-    with open(USERS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(users, f, indent=4, ensure_ascii=False)
-
+    storage.save_users(users)
 def get_user_balance(user_id: int) -> float:
     users = load_users()
     str_user_id = str(user_id)
@@ -592,6 +647,9 @@ async def send_service_purchase_log_to_admins(context: ContextTypes.DEFAULT_TYPE
     message += f"🌐 **سرور:** {server_name} (`{server_key}`)\n"
     message += f"🛍️ **سرویس:** {service_label}\n"
     
+    if sub_link:
+        message += f"\n🔗 **لینک اشتراک:**\n`{sub_link}`\n"
+    
     if internal_key == "FREE_TRIAL":
         message += f"🎯 **نوع سرویس:** 🆓 تست رایگان\n"
     else:
@@ -624,9 +682,6 @@ async def send_service_purchase_log_to_admins(context: ContextTypes.DEFAULT_TYPE
     message += f"\n🔧 **اطلاعات فنی:**\n"
     message += f"🆔 **UUID:** `{uuid}`\n"
     
-    if sub_link:
-        message += f"🔗 **لینک اشتراک:** `{sub_link[:50]}`\n"
-    
     message += f"🕒 **زمان {action}:** {datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S')}\n"
     
     # ارسال به تمام ادمین‌ها
@@ -638,16 +693,6 @@ async def send_service_purchase_log_to_admins(context: ContextTypes.DEFAULT_TYPE
                 parse_mode="Markdown"
             )
             
-            # اگر vmess_link داریم، آن را هم در یک پیام جداگانه ارسال کنیم
-            if vmess_link and len(vmess_link) < 4000:
-                try:
-                    await context.bot.send_message(
-                        chat_id=admin_id,
-                        #text=f"🔗 **لینک VMess برای {config_name}:**\n\n`{vmess_link}`",
-                        parse_mode="Markdown"
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to send VMess link to admin {admin_id}: {e}")
                     
         except Exception as e:
             logger.error(f"Failed to send service log to admin {admin_id}: {e}")
@@ -657,20 +702,9 @@ async def send_service_purchase_log_to_admins(context: ContextTypes.DEFAULT_TYPE
 # ============================================================
 
 def load_transaction_history() -> dict:
-    """بارگذاری تاریخچه تراکنش‌ها"""
-    if not os.path.exists(TRANSACTION_HISTORY_FILE):
-        return {}
-    try:
-        with open(TRANSACTION_HISTORY_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (IOError, json.JSONDecodeError):
-        return {}
-
+    return storage.load_transaction_history()
 def save_transaction_history(history: dict):
-    """ذخیره تاریخچه تراکنش‌ها"""
-    with open(TRANSACTION_HISTORY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(history, f, indent=4, ensure_ascii=False)
-
+    storage.save_transaction_history(history)
 def add_transaction(user_id: int, transaction_type: str, amount: float, description: str = "", admin_id: int = None) -> str:
     """افزودن تراکنش جدید به تاریخچه"""
     history = load_transaction_history()
@@ -713,20 +747,9 @@ def get_user_transactions(user_id: int, limit: int = 50) -> list:
 # ============================================================
 
 def load_free_trial_users() -> dict:
-    """بارگذاری لیست کاربرانی که از تست رایگان استفاده کرده‌اند"""
-    if not os.path.exists(FREE_TRIAL_USERS_FILE):
-        return {}
-    try:
-        with open(FREE_TRIAL_USERS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (IOError, json.JSONDecodeError):
-        return {}
-
+    return storage.load_free_trial_users()
 def save_free_trial_users(users: dict):
-    """ذخیره لیست کاربران تست رایگان"""
-    with open(FREE_TRIAL_USERS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(users, f, indent=4, ensure_ascii=False)
-
+    storage.save_free_trial_users(users)
 def has_user_used_free_trial(user_id: int) -> bool:
     """بررسی اینکه آیا کاربر قبلاً از تست رایگان استفاده کرده است"""
     users = load_free_trial_users()
@@ -746,20 +769,9 @@ def mark_free_trial_used(user_id: int):
 # ============================================================
 
 def load_pending_receipts() -> dict:
-    """بارگذاری لیست رسیدهای در انتظار تأیید"""
-    if not os.path.exists(PENDING_RECEIPTS_FILE):
-        return {}
-    try:
-        with open(PENDING_RECEIPTS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (IOError, json.JSONDecodeError):
-        return {}
-
+    return storage.load_pending_receipts()
 def save_pending_receipts(receipts: dict):
-    """ذخیره لیست رسیدهای در انتظار تأیید"""
-    with open(PENDING_RECEIPTS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(receipts, f, indent=4, ensure_ascii=False)
-
+    storage.save_pending_receipts(receipts)
 def add_pending_receipt(user_id: int, amount_toman: int, receipt_file_id: str) -> str:
     """افزودن رسید جدید به لیست در انتظار"""
     receipts = load_pending_receipts()
@@ -874,20 +886,9 @@ def process_receipt_atomic(receipt_id: str, status: str, admin_id: int) -> tuple
 # ============================================================
 
 def load_referral_data() -> dict:
-    """بارگذاری اطلاعات رفرال"""
-    if not os.path.exists(REFERRAL_DATA_FILE):
-        return {"referrals": {}, "earnings_history": {}}
-    try:
-        with open(REFERRAL_DATA_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (IOError, json.JSONDecodeError):
-        return {"referrals": {}, "earnings_history": {}}
-
+    return storage.load_referral_data()
 def save_referral_data(data: dict):
-    """ذخیره اطلاعات رفرال"""
-    with open(REFERRAL_DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-
+    storage.save_referral_data(data)
 def get_user_referral_info(user_id: int) -> dict:
     """دریافت اطلاعات رفرال کاربر"""
     users = load_users()
@@ -958,8 +959,15 @@ def add_referral_earning(referred_user_id: int, amount_toman: int) -> tuple[floa
     
     str_referred_by = str(referred_by)
     
+    # درصد پورسانت: مقدار اختصاصی کاربر (از پنل ادمین) و در غیر این صورت مقدار پیش‌فرض
+    custom_percent = users.get(str_referred_by, {}).get("referral_percent")
+    try:
+        percent = float(custom_percent) if custom_percent is not None and custom_percent != "" else float(REFERRAL_PERCENT)
+    except (TypeError, ValueError):
+        percent = float(REFERRAL_PERCENT)
+
     # محاسبه پورسانت
-    referral_earning = (amount_toman * REFERRAL_PERCENT) / 100
+    referral_earning = (amount_toman * percent) / 100
     
     # افزایش موجودی رفرال دهنده
     if str_referred_by in users:
@@ -994,7 +1002,7 @@ def add_referral_earning(referred_user_id: int, amount_toman: int) -> tuple[floa
         "from_user": referred_user_id,
         "amount": referral_earning,
         "original_amount": amount_toman,
-        "percent": REFERRAL_PERCENT,
+        "percent": percent,
         "date": datetime.datetime.now().isoformat()
     })
     
@@ -1356,6 +1364,19 @@ async def handle_admin_edit_input(update: Update, context: ContextTypes.DEFAULT_
     
     user_id = update.effective_user.id
     text = update.message.text.strip()
+
+    # ارسال پیام مستقیم ادمین به کاربر
+    if 'contact_user_target' in context.user_data:
+        target_user_id = context.user_data.pop('contact_user_target')
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text="📩 پیام از پشتیبانی:" + chr(10) + chr(10) + text
+            )
+            await update.message.reply_text(f"✅ پیام برای کاربر {target_user_id} ارسال شد.")
+        except Exception as exc:
+            await update.message.reply_text(f"❌ ارسال پیام ناموفق بود: {exc}")
+        return
     
     # بررسی اینکه آیا در حال ویرایش موجودی هستیم
     if 'edit_balance_target' in context.user_data:
@@ -1919,7 +1940,7 @@ async def referral_earnings_history_admin(update: Update, context: ContextTypes.
     message_text += f"📊 **آمار کلی:**\n"
     message_text += f"• تعداد تراکنش: {len(earnings_history)} عدد\n"
     message_text += f"• مجموع درآمد: {total_earnings:,.0f} تومان\n"
-    message_text += f"• درصد رفرال: {REFERRAL_PERCENT}%\n\n"
+    message_text += f"• درصد رفرال: {user_referral_percent(target_user_id):g}%\n\n"
     
     message_text += f"📈 **تراکنش‌ها (صفحه {page} از {total_pages}):**\n"
     
@@ -2253,353 +2274,785 @@ async def addall_cancel_callback(update: Update, context: ContextTypes.DEFAULT_T
 # --- توابع API پنل X-UI (سیستم چند سروره) ---
 # ============================================================
 
-async def xui_login(server_key: str) -> bool:
-    """ورود به پنل X-UI برای سرور مشخص"""
-    global XUI_AUTH_COOKIES
-    
-    server_config = SERVERS_CONFIG[server_key]
-    login_url = f"{server_config['xui_panel_url']}{server_config['login_path']}"
-    data = {"username": server_config['xui_username'], "password": server_config['xui_password']}
-    
+# ============================================================
+# --- توابع API پنل 3x-ui (نسخه جدید MHSanaei + سازگاری با نسخه قدیمی) ---
+# ============================================================
+
+XUI_CSRF_TOKENS = {}
+
+def _xui_cfg(server_key: str) -> dict:
+    return SERVERS_CONFIG.get(server_key, {}) or {}
+
+def _xui_base_url(server_key: str) -> str:
+    """آدرس پایه پنل (panel_url + web base path) بدون تکرار base path"""
+    from urllib.parse import urlsplit
+
+    cfg = _xui_cfg(server_key)
+    panel_url = str(cfg.get('xui_panel_url') or '').strip().rstrip('/')
+    base_path = str(cfg.get('base_path') or '').strip()
+    if base_path.lower() in ('', '/', 'base_path', '/base_path', 'login_path', '/login_path'):
+        base_path = ''
+    if base_path:
+        if not base_path.startswith('/'):
+            base_path = '/' + base_path
+        base_path = base_path.rstrip('/')
+        # اگر base path قبلاً داخل xui_panel_url آمده باشد، دوباره اضافه نشود
+        if urlsplit(panel_url).path.rstrip('/').endswith(base_path):
+            base_path = ''
+    return panel_url + base_path
+
+def _xui_login_urls(server_key: str) -> list:
+    """آدرس‌های احتمالی login (نسخه جدید: /login زیر base path)"""
+    cfg = _xui_cfg(server_key)
+    panel_url = str(cfg.get('xui_panel_url') or '').strip().rstrip('/')
+    urls = []
+    login_path = str(cfg.get('login_path') or '').strip()
+    if login_path and login_path not in ('/', 'login_path'):
+        if not login_path.startswith('/'):
+            login_path = '/' + login_path
+        urls.append(panel_url + login_path)
+    urls.append(_xui_base_url(server_key) + '/login')
+    urls.append(panel_url + '/login')
+    unique = []
+    for url in urls:
+        if url and url not in unique:
+            unique.append(url)
+    return unique
+
+def _xui_extract_cookie_header(response) -> str:
+    pairs = []
     try:
-        # verify=False برای نادیده گرفتن خطاهای SSL در سرورهای محلی X-UI
-        response = requests.post(login_url, data=data, timeout=5, verify=False)
-        response.raise_for_status()
-        
-        if 'session' in response.cookies:
-            cookie_value = response.cookies['session']
-            XUI_AUTH_COOKIES[server_key] = f"session={cookie_value}"
-            logger.info(f"X-UI login successful for {server_key}")
-            return True
-        
-        if 'set-cookie' in response.headers:
-            set_cookie_header = response.headers.get('set-cookie', '')
-            match = re.search(r'((?:3x-ui|session|x_session|X_SESSION|panel_session)=[^;]+)', set_cookie_header, re.IGNORECASE)
-            if match:
-                full_cookie_string = match.group(1)
-                XUI_AUTH_COOKIES[server_key] = full_cookie_string.split(';')[0].strip()
-                logger.info(f"X-UI login successful for {server_key} (from Set-Cookie header)")
-                return True
-        
-        if response.json().get('success') == True:
-            logger.error(f"X-UI login successful for {server_key} but NO VALID SESSION COOKIE was found.")
-            return False
-        
-        logger.error(f"X-UI login failed for {server_key}. Response: {response.text}")
-        return False
-    
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to connect to X-UI panel for {server_key}: {e}")
+        for key, value in response.cookies.items():
+            if str(key).lower() == 'lang':
+                continue
+            pairs.append(f"{key}={value}")
+    except Exception:
+        pairs = []
+    if pairs:
+        return '; '.join(pairs)
+    header = response.headers.get('set-cookie', '') or ''
+    for name in ('3x-ui', 'session', 'x_session', 'panel_session'):
+        match = re.search(name + r'=([^;,\s]+)', header, re.IGNORECASE)
+        if match:
+            return f"{name}={match.group(1)}"
+    return ''
+
+def _xui_payload(response) -> dict:
+    try:
+        data = response.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+def _xui_auth_headers(server_key: str):
+    """هدرهای احراز هویت: API Token یا کوکی session"""
+    cfg = _xui_cfg(server_key)
+    token = str(cfg.get('api_token') or '').strip()
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    cookie = XUI_AUTH_COOKIES.get(server_key)
+    if cookie:
+        return {"Cookie": cookie}
+    return None
+
+async def xui_load_csrf_token(server_key: str, cookie_header: str = None) -> None:
+    """گرفتن توکن CSRF و کوکی pre-session (این نسخه از 3x-ui برای login هم CSRF می‌خواهد)"""
+    if str(_xui_cfg(server_key).get('api_token') or '').strip():
+        return
+    cookie = cookie_header if cookie_header is not None else XUI_AUTH_COOKIES.get(server_key)
+    headers = {"Cookie": cookie} if cookie else {}
+    try:
+        response = requests.get(
+            _xui_base_url(server_key) + '/csrf-token',
+            headers=headers, timeout=10, verify=False
+        )
+    except requests.exceptions.RequestException:
+        return
+    if response.status_code != 200:
+        return
+    token = _xui_payload(response).get('obj')
+    if token:
+        XUI_CSRF_TOKENS[server_key] = str(token)
+    merged = _xui_merge_cookies(cookie, response)
+    if merged:
+        XUI_AUTH_COOKIES[server_key] = merged
+
+def _xui_merge_cookies(existing_header: str, response) -> str:
+    cookies = {}
+    for part in str(existing_header or '').split(';'):
+        if '=' in part:
+            name, value = part.split('=', 1)
+            name = name.strip()
+            if name:
+                cookies[name] = value.strip()
+    try:
+        for name, value in response.cookies.items():
+            cookies[name] = value
+    except Exception:
+        pass
+    return '; '.join(f"{name}={value}" for name, value in cookies.items())
+
+def _xui_origin(server_key: str) -> str:
+    from urllib.parse import urlsplit
+    parts = urlsplit(_xui_base_url(server_key))
+    return f"{parts.scheme}://{parts.netloc}"
+
+async def xui_login(server_key: str) -> bool:
+    """ورود به پنل 3x-ui (CSRF + کوکی، پشتیبانی از API Token و فرم قدیمی)"""
+    global XUI_AUTH_COOKIES
+
+    cfg = _xui_cfg(server_key)
+    if str(cfg.get('api_token') or '').strip():
+        logger.info(f"3x-ui: using API token for {server_key}")
+        return True
+
+    username = str(cfg.get('xui_username') or '').strip()
+    password = str(cfg.get('xui_password') or '')
+    if not username or not password or password == 'xui_password' or username == 'xui_username':
+        logger.error(f"3x-ui: username/password not configured for {server_key}")
         XUI_AUTH_COOKIES[server_key] = None
         return False
 
+    await xui_load_csrf_token(server_key)
+
+    origin = _xui_origin(server_key)
+    referer = _xui_base_url(server_key) + '/'
+    last_error = ""
+    for login_url in _xui_login_urls(server_key):
+        for mode in ('json', 'form'):
+            body_kwargs = ({"json": {"username": username, "password": password}}
+                           if mode == 'json'
+                           else {"data": {"username": username, "password": password}})
+
+            for attempt in (1, 2):
+                headers = {
+                    "Accept": "application/json, text/plain, */*",
+                    "Origin": origin,
+                    "Referer": referer,
+                }
+                cookie = XUI_AUTH_COOKIES.get(server_key)
+                if cookie:
+                    headers["Cookie"] = cookie
+                csrf = XUI_CSRF_TOKENS.get(server_key)
+                if csrf:
+                    headers["X-CSRF-Token"] = csrf
+
+                try:
+                    response = requests.post(login_url, timeout=10, verify=False,
+                                             headers=headers, **body_kwargs)
+                except requests.exceptions.RequestException as exc:
+                    last_error = f"{login_url}: {exc}"
+                    break
+
+                payload = _xui_payload(response)
+                message = str(payload.get('msg') or '')
+
+                if response.status_code == 403 and attempt == 1:
+                    XUI_CSRF_TOKENS.pop(server_key, None)
+                    await xui_load_csrf_token(server_key)
+                    continue
+
+                if response.status_code == 404:
+                    last_error = f"{login_url}: 404"
+                    break
+                if response.status_code >= 500:
+                    last_error = f"{login_url}: {response.status_code}"
+                    break
+
+                if response.status_code == 200 and payload.get('success') is True:
+                    merged = _xui_merge_cookies(XUI_AUTH_COOKIES.get(server_key), response)
+                    if merged:
+                        XUI_AUTH_COOKIES[server_key] = merged
+                    XUI_CSRF_TOKENS.pop(server_key, None)
+                    await xui_load_csrf_token(server_key)
+                    logger.info(f"3x-ui login successful for {server_key}")
+                    return True
+
+                last_error = f"{login_url} [{mode}]: {response.status_code} {message or response.text[:120]}"
+                if 'password' in message.lower() or '2fa' in message.lower() or 'two-factor' in message.lower():
+                    break
+
+    logger.error(f"3x-ui login failed for {server_key}. {last_error}")
+    XUI_AUTH_COOKIES[server_key] = None
+    return False
+
 async def xui_get_headers(server_key: str) -> dict | None:
     """دریافت Headers اتصال برای سرور مشخص"""
-    global XUI_AUTH_COOKIES
-    
-    if XUI_AUTH_COOKIES.get(server_key) is None:
+    if _xui_auth_headers(server_key) is None:
         if not await xui_login(server_key):
             return None
-    
-    return {"Cookie": XUI_AUTH_COOKIES[server_key]}
+    return _xui_auth_headers(server_key)
 
-async def xui_check_config_name_exists(server_key: str, config_name: str) -> bool | None:
-    """بررسی تکراری نبودن نام در سرور مشخص"""
-    global XUI_AUTH_COOKIES
-    
-    headers = await xui_get_headers(server_key)
-    if headers is None: return None
-    
-    server_config = SERVERS_CONFIG[server_key]
-    inbound_id = server_config['inbound_id']
-    base_path = server_config['base_path']
-    xui_panel_url = server_config['xui_panel_url']
-    
-    inbound_list_url = f"{xui_panel_url}{base_path}/panel/api/inbounds/list"
-    
-    try:
-        response = requests.get(inbound_list_url, headers=headers, timeout=10, verify=False)
-        if response.status_code == 401:
-            XUI_AUTH_COOKIES[server_key] = None
-            logger.warning(f"X-UI cookie expired for {server_key}. Retrying login...")
-            return await xui_check_config_name_exists(server_key, config_name)
-        
-        response.raise_for_status()
-        result = response.json()
-        
-        if result.get('success'):
-            inbounds = result.get('obj', [])
-            target_inbound = next((item for item in inbounds if item.get('id') == inbound_id), None)
-            if not target_inbound:
-                logger.error(f"Inbound with ID {inbound_id} not found in {server_key}")
-                return None
-            
-            settings = json.loads(target_inbound.get('settings', '{}'))
-            clients = settings.get('clients', [])
-            for client in clients:
-                if client.get('email') == config_name:
-                    return True
-            return False
-        else:
-            logger.error(f"X-UI failed to get clients list for {server_key}: {result.get('msg')}")
+async def xui_api_request(server_key: str, method: str, path: str,
+                          json_body=None, data=None, retry: bool = True):
+    """درخواست به API پنل با تمدید خودکار session"""
+    headers = _xui_auth_headers(server_key)
+    if headers is None:
+        if not await xui_login(server_key):
             return None
-    
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to connect to X-UI panel for {server_key}: {e}")
+        headers = _xui_auth_headers(server_key)
+        if headers is None:
+            return None
+
+    headers = dict(headers)
+    csrf = XUI_CSRF_TOKENS.get(server_key)
+    if csrf and method.upper() not in ('GET', 'HEAD'):
+        headers['X-CSRF-Token'] = csrf
+
+    url = path if path.startswith('http') else _xui_base_url(server_key) + path
+    try:
+        response = requests.request(method, url, headers=headers, json=json_body,
+                                    data=data, timeout=15, verify=False)
+    except requests.exceptions.RequestException as exc:
+        logger.error(f"3x-ui {method} {url} failed for {server_key}: {exc}")
         return None
 
-async def xui_add_client(server_key: str, user_id: int, volume_gb: int, config_name: str, days: int, limit_ip: int, existing_uuid: str = None, existing_sub_id: str = None) -> tuple[str | None, str | None, str | None]:
-    """ایجاد کلاینت در سرور مشخص"""
-    global XUI_AUTH_COOKIES
-    
-    headers = await xui_get_headers(server_key)
-    if headers is None: return None, None, None
-    
-    server_config = SERVERS_CONFIG[server_key]
-    inbound_id = server_config['inbound_id']
-    base_path = server_config['base_path']
-    xui_panel_url = server_config['xui_panel_url']
-    server_address = server_config['server_address']
-    server_port_subscription = server_config['server_port_subscription']
-    subscribe_path = server_config['subscribe_path']
-    
-    add_url = f"{xui_panel_url}{base_path}/panel/api/inbounds/addClient"
-    volume_bytes = volume_gb * 1024 * 1024 * 1024
-    
-    client_uuid = existing_uuid if existing_uuid else str(uuid.uuid4())
-    sub_id = existing_sub_id if existing_sub_id else config_name
+    if response.status_code == 403 and retry:
+        logger.warning(f"3x-ui CSRF token rejected for {server_key}. Refreshing...")
+        XUI_CSRF_TOKENS.pop(server_key, None)
+        await xui_load_csrf_token(server_key)
+        return await xui_api_request(server_key, method, path, json_body=json_body,
+                                     data=data, retry=False)
 
-    if days > 0:
-        expiry_time_ms = int((time.time() + days * 24 * 3600) * 1000)
-    else:
-        expiry_time_ms = 0
-    
-    client_settings_object = {
-        "clients": [
-            {
-                "id": client_uuid,
-                "flow": "",
-                "email": config_name,
-                "limitIp": limit_ip,
-                "totalGB": volume_bytes,
-                "expiryTime": expiry_time_ms,
-                "enable": True,
-                "tgId": "",
-                "subId": sub_id
-            }
-        ]
-    }
-    
-    data = {"id": inbound_id, "settings": json.dumps(client_settings_object)}
-    
-    if 'Content-Type' in headers:
-        del headers['Content-Type']
-    
+    if response.status_code == 401 and retry:
+        logger.warning(f"3x-ui session expired for {server_key}. Retrying login...")
+        XUI_AUTH_COOKIES[server_key] = None
+        XUI_CSRF_TOKENS.pop(server_key, None)
+        if await xui_login(server_key):
+            return await xui_api_request(server_key, method, path, json_body=json_body,
+                                         data=data, retry=False)
+    return response
+
+def _xui_json_field(value, default):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else default
+        except json.JSONDecodeError:
+            return default
+    return default
+
+async def xui_get_inbounds(server_key: str):
+    """لیست اینباندهای پنل"""
+    response = await xui_api_request(server_key, 'GET', '/panel/api/inbounds/list')
+    if response is None:
+        return None
+    payload = _xui_payload(response)
+    if response.status_code != 200 or not payload.get('success'):
+        logger.error(f"3x-ui failed to list inbounds on {server_key}: "
+                     f"{payload.get('msg') or response.status_code}")
+        return None
+    inbounds = payload.get('obj')
+    return inbounds if isinstance(inbounds, list) else []
+
+async def xui_get_inbound(server_key: str, inbound_id=None):
+    """دریافت اینباند پنل؛ inbound_id=0 یعنی آخرین اینباند ساخته‌شده"""
+    cfg = _xui_cfg(server_key)
+    wanted_raw = cfg.get('inbound_id') if inbound_id is None else inbound_id
     try:
-        response = requests.post(add_url, headers=headers, data=data, timeout=10, verify=False)
-        if response.status_code == 401:
-            XUI_AUTH_COOKIES[server_key] = None
-            logger.warning(f"X-UI cookie expired for {server_key}. Retrying login...")
-            return await xui_add_client(server_key, user_id, volume_gb, config_name, days, limit_ip, existing_uuid, existing_sub_id)
-        
-        response.raise_for_status()
-        result = response.json()
-        
-        if result.get('success'):
-            logger.info(f"X-UI client created on {server_key} for user {user_id}. UUID: {client_uuid} with name: {config_name}")
-            
-            vmess_obj = get_protocol_settings(server_key).copy()
-            vmess_obj["id"] = client_uuid
-            vmess_obj["ps"] = config_name
-            vmess_json = json.dumps(vmess_obj)
-            vmess_base64 = base64.b64encode(vmess_json.encode('utf-8')).decode('utf-8')
-            vmess_link = f"vmess://{vmess_base64}"
-            
-            sub_link = f"{xui_panel_url.split(':')[0]}://{server_address}:{server_port_subscription}{subscribe_path}{sub_id}"
-            
-            return vmess_link, client_uuid, sub_link
-        else:
-            logger.error(f"X-UI failed to add client on {server_key}: {result.get('msg')}. Full response: {result}")
-            return None, None, None
-    
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to connect to X-UI panel for {server_key}: {e}")
+        wanted = int(wanted_raw)
+    except (TypeError, ValueError):
+        wanted = 0
+
+    inbounds = await xui_get_inbounds(server_key)
+    if inbounds is None:
+        return None
+    if not inbounds:
+        logger.error(f"3x-ui: no inbound found on {server_key}")
+        return None
+
+    target = None
+    if wanted > 0:
+        target = next((item for item in inbounds if int(item.get('id') or 0) == wanted), None)
+        if target is None:
+            logger.error(f"3x-ui: inbound {wanted} not found on {server_key}")
+            return None
+    else:
+        target = max(inbounds, key=lambda item: int(item.get('id') or 0))
+        logger.info(f"3x-ui: using last inbound id={target.get('id')} on {server_key}")
+
+    try:
+        inbound_id_value = int(target.get('id') or 0)
+    except (TypeError, ValueError):
+        inbound_id_value = 0
+
+    if inbound_id_value > 0:
+        response = await xui_api_request(server_key, 'GET', f"/panel/api/inbounds/get/{inbound_id_value}")
+        if response is not None and response.status_code == 200:
+            payload = _xui_payload(response)
+            if payload.get('success') and isinstance(payload.get('obj'), dict):
+                target = payload['obj']
+
+    inbound = dict(target)
+    inbound['settings'] = _xui_json_field(target.get('settings'), {})
+    inbound['streamSettings'] = _xui_json_field(target.get('streamSettings'), {})
+    inbound['sniffing'] = _xui_json_field(target.get('sniffing'), {})
+    return inbound
+
+async def xui_get_sub_link(server_key: str, sub_id: str):
+    """ساخت لینک اشتراک از تنظیمات واقعی Subscription پنل (subPath/subPort/subURI)"""
+    from urllib.parse import urlsplit
+
+    cfg = _xui_cfg(server_key)
+    panel_url = str(cfg.get('xui_panel_url') or '').strip()
+    scheme = 'https' if panel_url.lower().startswith('https://') else 'http'
+
+    settings = {}
+    for method in ('POST', 'GET'):
+        response = await xui_api_request(server_key, method, '/panel/api/setting/all')
+        if response is not None and response.status_code == 200:
+            payload = _xui_payload(response)
+            if payload.get('success') and isinstance(payload.get('obj'), dict):
+                settings = payload['obj']
+                break
+
+    if settings.get('subEnable') is False:
+        logger.warning(f"3x-ui: subscription service is disabled on {server_key}")
+        return None
+
+    sub_uri = str(settings.get('subURI') or '').strip()
+    sub_domain = str(settings.get('subDomain') or '').strip()
+    sub_port = settings.get('subPort')
+    sub_path = str(settings.get('subPath') or '').strip()
+
+    if not sub_uri:
+        host = sub_domain or str(cfg.get('server_address') or '').strip()
+        if not host:
+            host = urlsplit(panel_url).hostname or ''
+        if not host:
+            return None
+        if not sub_path:
+            sub_path = str(cfg.get('subscribe_path') or '/sub/').strip() or '/sub/'
+        if not sub_path.startswith('/'):
+            sub_path = '/' + sub_path
+        port = sub_port or cfg.get('server_port_subscription') or 2096
+        sub_uri = f"{scheme}://{host}:{port}{sub_path.rstrip('/')}/"
+
+    if not sub_uri.endswith('/'):
+        sub_uri += '/'
+    return f"{sub_uri}{sub_id}"
+
+def xui_build_client_link(server_key: str, inbound: dict, client: dict):
+    """ساخت لینک اتصال از روی streamSettings واقعی اینباند (fallback)"""
+    from urllib.parse import urlencode, quote
+
+    cfg = _xui_cfg(server_key)
+    protocol = str(inbound.get('protocol') or '').lower()
+    stream = inbound.get('streamSettings') or {}
+    if isinstance(stream, str):
+        stream = _xui_json_field(stream, {})
+    email = str(client.get('email') or '')
+    address = str(cfg.get('server_address') or '').strip()
+    port = cfg.get('server_port_client') or inbound.get('port') or 443
+    if not address:
+        return None
+
+    network = str(stream.get('network') or 'tcp').lower()
+    security = str(stream.get('security') or 'none').lower()
+    tls_settings = stream.get('tlsSettings') or {}
+    reality = stream.get('realitySettings') or {}
+    ws_settings = stream.get('wsSettings') or {}
+    grpc_settings = stream.get('grpcSettings') or {}
+    xhttp_settings = stream.get('xhttpSettings') or stream.get('splithttpSettings') or {}
+    httpupgrade = stream.get('httpupgradeSettings') or {}
+    tcp_settings = stream.get('tcpSettings') or {}
+
+    server_names = reality.get('serverNames') or []
+    short_ids = reality.get('shortIds') or []
+    reality_inner = reality.get('settings') or {}
+    sni = (tls_settings.get('serverName')
+           or (server_names[0] if server_names else '')
+           or address)
+    fingerprint = reality_inner.get('fingerprint') or tls_settings.get('fingerprint') or 'chrome'
+    alpn = tls_settings.get('alpn') or []
+    alpn_value = ','.join(alpn) if isinstance(alpn, list) else str(alpn or '')
+    host_header = (ws_settings.get('headers') or {}).get('Host') or address
+    path = (ws_settings.get('path') or xhttp_settings.get('path')
+            or httpupgrade.get('path') or '')
+    service_name = grpc_settings.get('serviceName') or ''
+    header_type = (tcp_settings.get('header') or {}).get('type') or 'none'
+
+    client_id = str(client.get('id') or client.get('password') or '')
+    query = {
+        'type': network,
+        'security': security,
+        'fp': fingerprint if security in ('tls', 'reality') else '',
+        'sni': sni if security in ('tls', 'reality') else '',
+        'alpn': alpn_value,
+        'pbk': reality_inner.get('publicKey') or '',
+        'sid': short_ids[0] if short_ids else '',
+        'spx': reality_inner.get('spiderX') or '/',
+        'path': path,
+        'host': host_header,
+        'serviceName': service_name,
+        'mode': xhttp_settings.get('mode') or '',
+        'headerType': header_type if header_type != 'none' else '',
+    }
+
+    if protocol == 'vless':
+        query['encryption'] = 'none'
+        query['flow'] = str(client.get('flow') or '')
+        params = urlencode({key: value for key, value in query.items() if value not in ('', None)})
+        return f"vless://{client_id}@{address}:{port}?{params}#{quote(email)}"
+
+    if protocol == 'vmess':
+        if not client_id:
+            return None
+        vmess = {
+            "v": "2", "ps": email, "add": address, "port": str(port), "id": client_id,
+            "aid": "0", "scy": "auto", "net": network, "type": header_type,
+            "host": host_header, "path": path, "tls": '' if security == 'none' else security,
+            "sni": sni, "alpn": alpn_value,
+        }
+        encoded = base64.b64encode(json.dumps(vmess, ensure_ascii=False).encode('utf-8')).decode('utf-8')
+        return f"vmess://{encoded}"
+
+    if protocol == 'trojan':
+        params = urlencode({key: value for key, value in query.items() if value not in ('', None)})
+        return f"trojan://{client_id}@{address}:{port}?{params}#{quote(email)}"
+
+    if protocol == 'shadowsocks':
+        method = str(client.get('method') or inbound.get('method') or 'chacha20-ietf-poly1305')
+        password = str(client.get('password') or '')
+        if not password:
+            return None
+        userinfo = base64.b64encode(f"{method}:{password}".encode('utf-8')).decode('utf-8')
+        return f"ss://{userinfo}@{address}:{port}#{quote(email)}"
+
+    logger.warning(f"3x-ui: cannot build link for protocol '{protocol}' on {server_key}")
+    return None
+
+async def xui_get_client_link(server_key: str, config_name: str, inbound=None, client=None):
+    """لینک اتصال؛ اول از خود پنل و در صورت نیاز از streamSettings اینباند"""
+    response = await xui_api_request(server_key, 'GET', f"/panel/api/clients/links/{config_name}")
+    if response is not None and response.status_code == 200:
+        payload = _xui_payload(response)
+        links = payload.get('obj') or []
+        if payload.get('success') and isinstance(links, list) and links:
+            protocol = str((inbound or {}).get('protocol') or '').lower()
+            if protocol:
+                for link in links:
+                    if str(link).lower().startswith(protocol + '://'):
+                        return str(link)
+            return str(links[0])
+        if payload.get('msg'):
+            logger.warning(f"3x-ui links for {config_name} on {server_key}: {payload.get('msg')}")
+
+    if inbound is None:
+        inbound = await xui_get_inbound(server_key)
+    if inbound is None:
+        return None
+    if client is None:
+        clients = (inbound.get('settings') or {}).get('clients') or []
+        client = next((item for item in clients if item.get('email') == config_name), None)
+    if not client:
+        return None
+    return xui_build_client_link(server_key, inbound, client)
+
+def _xui_relative_cfg_url(server_key: str, sub_id: str):
+    """لینک اشتراک قدیمی به عنوان آخرین راه‌حل"""
+    cfg = _xui_cfg(server_key)
+    server_address = str(cfg.get('server_address') or '').strip()
+    if not server_address:
+        return None
+    scheme = 'https' if str(cfg.get('xui_panel_url') or '').lower().startswith('https://') else 'http'
+    port = cfg.get('server_port_subscription') or 2096
+    path = str(cfg.get('subscribe_path') or '/sub/')
+    if not path.startswith('/'):
+        path = '/' + path
+    if not path.endswith('/'):
+        path += '/'
+    return f"{scheme}://{server_address}:{port}{path}{sub_id}"
+
+async def xui_check_config_name_exists(server_key: str, config_name: str) -> bool | None:
+    """بررسی تکراری نبودن نام کانفیگ (ایمیل کلاینت) در پنل"""
+    response = await xui_api_request(server_key, 'GET', f"/panel/api/clients/get/{config_name}")
+    if response is not None and response.status_code == 200:
+        payload = _xui_payload(response)
+        if 'success' in payload:
+            return bool(payload.get('success'))
+        logger.warning(f"3x-ui client lookup for {config_name} on {server_key} returned unexpected body")
+    elif response is not None:
+        logger.warning(f"3x-ui client lookup for {config_name} on {server_key} "
+                       f"-> HTTP {response.status_code} ({_xui_base_url(server_key)})")
+    else:
+        logger.warning(f"3x-ui client lookup for {config_name} on {server_key} got no response")
+
+    inbound = await xui_get_inbound(server_key)
+    if inbound is None:
+        return None
+    clients = (inbound.get('settings') or {}).get('clients') or []
+    return any(client.get('email') == config_name for client in clients)
+
+async def xui_add_client(server_key: str, user_id: int, volume_gb: int, config_name: str, days: int,
+                         limit_ip: int, existing_uuid: str = None, existing_sub_id: str = None) -> tuple[str | None, str | None, str | None]:
+    """ایجاد کلاینت در آخرین اینباند پنل و ساخت لینک بر اساس همان اینباند"""
+    inbound = await xui_get_inbound(server_key)
+    if inbound is None:
         return None, None, None
 
-async def xui_update_client_v2(server_key: str, user_id: int, config_name: str, volume_add: int, days_add: int) -> tuple[bool, float, int]:
-    """به‌روزرسانی کلاینت در سرور مشخص"""
-    global XUI_AUTH_COOKIES
-    
-    headers = await xui_get_headers(server_key)
-    if headers is None: return False, 0.0, 0
-    
-    server_config = SERVERS_CONFIG[server_key]
-    inbound_id = server_config['inbound_id']
-    base_path = server_config['base_path']
-    xui_panel_url = server_config['xui_panel_url']
-    
-    inbound_list_url = f"{xui_panel_url}{base_path}/panel/api/inbounds/list"
-    
     try:
-        response = requests.get(inbound_list_url, headers=headers, timeout=10, verify=False)
-        if response.status_code == 401:
-            XUI_AUTH_COOKIES[server_key] = None
-            return await xui_update_client_v2(server_key, user_id, config_name, volume_add, days_add)
-        
-        response.raise_for_status()
-        result = response.json()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch inbound list for update on {server_key}: {e}")
-        return False, 0.0, 0
+        inbound_id = int(inbound.get('id') or 0)
+    except (TypeError, ValueError):
+        inbound_id = 0
+    protocol = str(inbound.get('protocol') or '').lower()
+    stream = inbound.get('streamSettings') or {}
+    security = str(stream.get('security') or '').lower()
+    network = str(stream.get('network') or '').lower()
 
-    if not result.get('success'):
-        logger.error(f"X-UI failed to get clients list for update on {server_key}: {result.get('msg')}")
-        return False, 0.0, 0
+    client_uuid = existing_uuid if existing_uuid else str(uuid.uuid4())
+    sub_id = existing_sub_id if existing_sub_id else config_name
+    volume_bytes = int(volume_gb * 1024 * 1024 * 1024)
+    expiry_time_ms = int((time.time() + days * 24 * 3600) * 1000) if days > 0 else 0
 
-    inbounds = result.get('obj', [])
-    target_inbound_obj = next((item for item in inbounds if item.get('id') == inbound_id), None)
-    if not target_inbound_obj:
-        logger.error(f"Inbound ID {inbound_id} not found for update on {server_key}")
-        return False, 0.0, 0
+    flow = ""
+    if protocol == 'vless' and network == 'tcp' and security in ('tls', 'reality'):
+        for existing in ((inbound.get('settings') or {}).get('clients') or []):
+            if existing.get('flow'):
+                flow = str(existing.get('flow'))
+                break
 
-    try:
-        settings = json.loads(target_inbound_obj.get('settings', '{}'))
-        clients = settings.get('clients', [])
-        
-        target_client_index = next((i for i, client in enumerate(clients) if client.get('email') == config_name), -1)
-        if target_client_index == -1:
-            logger.error(f"Client {config_name} not found on {server_key} for update")
-            return False, 0.0, 0
-        
-        target_client = clients[target_client_index]
-        
-        current_up = target_client.get('up', 0)
-        current_down = target_client.get('down', 0)
-        current_limit_ip = target_client.get('limitIp', 1)
-
-        current_total_bytes = target_client.get('totalGB', 0)
-        current_total_gb = current_total_bytes / (1024**3)
-        new_total_gb = current_total_gb + volume_add
-        new_total_bytes = int(new_total_gb * (1024**3))
-
-        current_expiry_ms = target_client.get('expiryTime', 0)
-        current_time_seconds = time.time()
-
-        if current_expiry_ms == 0:
-            new_expiry_seconds = current_time_seconds + days_add * 24 * 3600
-        else:
-            current_expiry_seconds = current_expiry_ms / 1000
-            start_time = max(current_time_seconds, current_expiry_seconds)
-            new_expiry_seconds = start_time + days_add * 24 * 3600
-        
-        new_expiry_ms = int(new_expiry_seconds * 1000)
-        new_expiry_days = int((new_expiry_seconds - current_time_seconds) / (24 * 3600))
-        
-        target_client['totalGB'] = new_total_bytes
-        target_client['expiryTime'] = new_expiry_ms
-        target_client['up'] = current_up
-        target_client['down'] = current_down
-        target_client['limitIp'] = current_limit_ip
-        
-        clients[target_client_index] = target_client
-        settings['clients'] = clients
-        target_inbound_obj['settings'] = json.dumps(settings)
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON Decode Error on {server_key}: {e}")
-        return False, 0.0, 0
-    except Exception as e:
-        logger.error(f"General error during client update on {server_key}: {e}")
-        return False, 0.0, 0
-    
-    update_url = f"{xui_panel_url}{base_path}/panel/api/inbounds/update/{inbound_id}"
-    
-    data = {
-        "remark": target_inbound_obj['remark'],
-        "enable": target_inbound_obj['enable'],
-        "protocol": target_inbound_obj['protocol'],
-        "port": target_inbound_obj['port'],
-        "expiryTime": target_inbound_obj['expiryTime'],
-        "total": target_inbound_obj['total'],
-        "settings": target_inbound_obj['settings'],
-        "streamSettings": target_inbound_obj['streamSettings'],
-        "sniffing": target_inbound_obj['sniffing']
+    client_data = {
+        "email": config_name,
+        "totalGB": volume_bytes,
+        "expiryTime": expiry_time_ms,
+        "limitIp": limit_ip,
+        "enable": True,
+        "subId": sub_id,
+        "tgId": 0,
+        "comment": f"uid:{user_id}",
     }
-    
-    if 'Content-Type' in headers:
-        del headers['Content-Type']
-        
-    try:
-        response = requests.post(update_url, headers=headers, data=data, timeout=10, verify=False)
-        if response.status_code == 401:
-            XUI_AUTH_COOKIES[server_key] = None
-            return await xui_update_client_v2(server_key, user_id, config_name, volume_add, days_add)
-            
-        response.raise_for_status()
-        result = response.json()
-        
-        if result.get('success'):
-            logger.info(f"X-UI client {config_name} updated on {server_key}. Added {volume_add} GB, {days_add} days.")
-            return True, new_total_gb, new_expiry_days
-        else:
-            logger.error(f"X-UI failed to update client on {server_key}: {result.get('msg')}")
-            return False, 0.0, 0
-            
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to connect to X-UI panel for update on {server_key}: {e}")
+    if protocol in ('vless', 'vmess', 'trojan', 'shadowsocks', 'wireguard', 'hysteria', 'mtproto'):
+        client_data["id"] = client_uuid
+    if flow:
+        client_data["flow"] = flow
+
+    response = await xui_api_request(
+        server_key, 'POST', '/panel/api/clients/add',
+        json_body={"client": client_data, "inboundIds": [inbound_id]}
+    )
+
+    legacy = False
+    if response is not None and response.status_code == 404:
+        legacy = True
+        legacy_settings = {"clients": [dict(client_data, tgId="")]}
+        response = await xui_api_request(
+            server_key, 'POST', '/panel/api/inbounds/addClient',
+            data={"id": inbound_id, "settings": json.dumps(legacy_settings)}
+        )
+
+    if response is None:
+        return None, None, None
+    payload = _xui_payload(response)
+    if response.status_code != 200 or not payload.get('success'):
+        logger.error(f"3x-ui failed to add client {config_name} on {server_key}: "
+                     f"{payload.get('msg') or response.status_code}")
+        return None, None, None
+
+    logger.info(f"3x-ui client created on {server_key} (inbound {inbound_id}"
+                f"{', legacy API' if legacy else ''}). UUID: {client_uuid} name: {config_name}")
+
+    refreshed = await xui_get_inbound(server_key, inbound_id)
+    link = await xui_get_client_link(server_key, config_name,
+                                     inbound=refreshed or inbound, client=client_data)
+    sub_link = await xui_get_sub_link(server_key, sub_id) or _xui_relative_cfg_url(server_key, sub_id)
+
+    if not link:
+        logger.error(f"3x-ui could not build connection link for {config_name} on {server_key}")
+    if not sub_link:
+        logger.error(f"3x-ui could not build subscription link for {config_name} on {server_key}")
+
+    return link, client_uuid, sub_link
+
+async def xui_update_client_v2(server_key: str, user_id: int, config_name: str,
+                               volume_add: int, days_add: int,
+                               max_days: int = None, set_unlimited: bool = False) -> tuple[bool, float, int]:
+    """تمدید حجم/زمان کلاینت در پنل"""
+    inbound = await xui_get_inbound(server_key)
+    if inbound is None:
         return False, 0.0, 0
+
+    current_client = None
+    response = await xui_api_request(server_key, 'GET', f"/panel/api/clients/get/{config_name}")
+    if response is not None and response.status_code == 200:
+        payload = _xui_payload(response)
+        if payload.get('success') and isinstance(payload.get('obj'), dict):
+            current_client = payload['obj'].get('client') or payload['obj']
+
+    if not current_client:
+        clients = (inbound.get('settings') or {}).get('clients') or []
+        current_client = next((item for item in clients if item.get('email') == config_name), None)
+        if not current_client:
+            logger.error(f"3x-ui client {config_name} not found on {server_key}")
+            return False, 0.0, 0
+
+    current_total_bytes = int(current_client.get('totalGB') or 0)
+    if set_unlimited:
+        # سرویس بی‌نهایت: حجم کل صفر یعنی نامحدود در 3x-ui
+        new_total_bytes = 0
+        new_total_gb = 0.0
+    elif current_total_bytes <= 0:
+        new_total_bytes = 0
+        new_total_gb = 0.0
+    else:
+        new_total_bytes = current_total_bytes + int(volume_add * 1024 * 1024 * 1024)
+        new_total_gb = new_total_bytes / (1024 ** 3)
+
+    current_expiry_ms = int(current_client.get('expiryTime') or 0)
+    now_seconds = time.time()
+    if current_expiry_ms <= 0:
+        new_expiry_ms = 0
+        new_expiry_days = 0
+    else:
+        current_expiry_seconds = current_expiry_ms / 1000
+        start_time = max(now_seconds, current_expiry_seconds)
+        # سقف اعتبار: بعد از هر تمدید، زمان اشتراک از حالا بیشتر از max_days روز نمی‌شود
+        cap_days = max_days or MAX_SUBSCRIPTION_DAYS
+        cap_seconds = now_seconds + cap_days * 24 * 3600
+        if current_expiry_seconds >= cap_seconds:
+            new_expiry_seconds = current_expiry_seconds
+        else:
+            new_expiry_seconds = min(start_time + days_add * 24 * 3600, cap_seconds)
+        new_expiry_ms = int(new_expiry_seconds * 1000)
+        new_expiry_days = int((new_expiry_seconds - now_seconds) / (24 * 3600))
+
+    update_body = {
+        "email": config_name,
+        "totalGB": new_total_bytes,
+        "expiryTime": new_expiry_ms,
+        "limitIp": int(current_client.get('limitIp') or 0),
+        "enable": True,
+    }
+
+    response = await xui_api_request(server_key, 'POST', f"/panel/api/clients/update/{config_name}",
+                                     json_body=update_body)
+    if response is not None and response.status_code == 404:
+        success = await xui_legacy_update_client(server_key, inbound, config_name,
+                                                 new_total_bytes, new_expiry_ms)
+        if success:
+            logger.info(f"3x-ui client {config_name} updated (legacy API). "
+                        f"total={new_total_gb}GB expiry_days={new_expiry_days}")
+            return True, new_total_gb, new_expiry_days
+        return False, 0.0, 0
+
+    if response is None:
+        return False, 0.0, 0
+    payload = _xui_payload(response)
+    if response.status_code == 200 and payload.get('success'):
+        logger.info(f"3x-ui client {config_name} updated on {server_key}. "
+                    f"total={new_total_gb}GB expiry_days={new_expiry_days}")
+        return True, new_total_gb, new_expiry_days
+
+    logger.error(f"3x-ui failed to update {config_name} on {server_key}: "
+                 f"{payload.get('msg') or response.status_code}")
+    return False, 0.0, 0
+
+async def xui_legacy_update_client(server_key: str, inbound: dict, config_name: str,
+                                   new_total_bytes: int, new_expiry_ms: int) -> bool:
+    """به‌روزرسانی کلاینت از طریق update کل اینباند (نسخه‌های قدیمی پنل)"""
+    try:
+        inbound_id = int(inbound.get('id') or 0)
+    except (TypeError, ValueError):
+        return False
+
+    settings = inbound.get('settings') or {}
+    clients = settings.get('clients') or []
+    target = next((item for item in clients if item.get('email') == config_name), None)
+    if not target:
+        return False
+    target['totalGB'] = new_total_bytes
+    target['expiryTime'] = new_expiry_ms
+    target['enable'] = True
+    settings['clients'] = clients
+
+    data = {
+        "remark": inbound.get('remark'),
+        "enable": inbound.get('enable'),
+        "protocol": inbound.get('protocol'),
+        "port": inbound.get('port'),
+        "expiryTime": inbound.get('expiryTime'),
+        "total": inbound.get('total'),
+        "settings": json.dumps(settings),
+        "streamSettings": json.dumps(inbound.get('streamSettings') or {}),
+        "sniffing": json.dumps(inbound.get('sniffing') or {}),
+    }
+    response = await xui_api_request(server_key, 'POST',
+                                     f"/panel/api/inbounds/update/{inbound_id}", data=data)
+    if response is None:
+        return False
+    payload = _xui_payload(response)
+    if response.status_code == 200 and payload.get('success'):
+        return True
+    logger.error(f"3x-ui legacy update failed for {config_name} on {server_key}: "
+                 f"{payload.get('msg') or response.status_code}")
+    return False
 
 async def xui_get_client_info_by_name(server_key: str, config_name: str) -> tuple[int | None, dict | None]:
-    """دریافت اطلاعات و ایندکس کلاینت با نام (ایمیل) در سرور مشخص"""
-    global XUI_AUTH_COOKIES
-    
-    headers = await xui_get_headers(server_key)
-    if headers is None: return None, None
-    
-    server_config = SERVERS_CONFIG[server_key]
-    inbound_id = server_config['inbound_id']
-    base_path = server_config['base_path']
-    xui_panel_url = server_config['xui_panel_url']
-    
-    inbound_list_url = f"{xui_panel_url}{base_path}/panel/api/inbounds/list"
-    
-    try:
-        response = requests.get(inbound_list_url, headers=headers, timeout=10, verify=False)
-        if response.status_code == 401:
-            XUI_AUTH_COOKIES[server_key] = None
-            return await xui_get_client_info_by_name(server_key, config_name)
-        
-        response.raise_for_status()
-        result = response.json()
-        
-        if result.get('success'):
-            inbounds = result.get('obj', [])
-            target_inbound = next((item for item in inbounds if item.get('id') == inbound_id), None)
-            if not target_inbound:
-                logger.error(f"Inbound with ID {inbound_id} not found on {server_key}")
-                return None, None
-            
-            settings = json.loads(target_inbound.get('settings', '{}'))
-            clients = settings.get('clients', [])
-            
-            target_client_index = next((i for i, client in enumerate(clients) if client.get('email') == config_name), -1)
-            
-            if target_client_index != -1:
-                return target_client_index, clients[target_client_index]
-            
-            logger.warning(f"Client {config_name} not found on {server_key}")
-            return None, None
-        else:
-            logger.error(f"X-UI failed to get clients list for {server_key}: {result.get('msg')}")
-            return None, None
-    
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to connect to X-UI panel on {server_key}: {e}")
+    """اطلاعات کلاینت (حجم/زمان/مصرف) برای نمایش به کاربر"""
+    response = await xui_api_request(server_key, 'GET', f"/panel/api/clients/get/{config_name}")
+    if response is not None and response.status_code == 200:
+        payload = _xui_payload(response)
+        if payload.get('success') and isinstance(payload.get('obj'), dict):
+            obj = payload['obj']
+            client = dict(obj.get('client') or {})
+            if client:
+                traffic = obj.get('traffic') or {}
+                if not isinstance(traffic, dict):
+                    traffic = {}
+                client['up'] = int(traffic.get('up', client.get('up', 0)) or 0)
+                client['down'] = int(traffic.get('down', client.get('down', 0)) or 0)
+                if not client['up'] and not client['down'] and obj.get('usedTraffic'):
+                    client['down'] = int(obj.get('usedTraffic') or 0)
+                return 0, client
+
+    inbound = await xui_get_inbound(server_key)
+    if inbound is None:
         return None, None
+    clients = (inbound.get('settings') or {}).get('clients') or []
+    for index, client in enumerate(clients):
+        if client.get('email') == config_name:
+            return index, client
+
+    logger.warning(f"3x-ui client {config_name} not found on {server_key}")
+    return None, None
 
 # ============================================================
 # --- توابع کمکی جدید ---
 # ============================================================
+
+
+async def xui_delete_client(server_key: str, config_name: str) -> bool:
+    """حذف کلاینت از پنل 3x-ui (API جدید و در صورت نیاز API قدیمی)"""
+    response = await xui_api_request(server_key, 'POST', f"/panel/api/clients/del/{config_name}")
+    if response is not None and response.status_code >= 400:
+        response = await xui_api_request(server_key, 'GET', f"/panel/api/clients/del/{config_name}")
+
+    if response is None or response.status_code == 404:
+        inbound = await xui_get_inbound(server_key)
+        if inbound is None:
+            return False
+        try:
+            inbound_id = int(inbound.get('id') or 0)
+        except (TypeError, ValueError):
+            inbound_id = 0
+        response = await xui_api_request(
+            server_key, 'POST', f"/panel/api/inbounds/{inbound_id}/delClient/{config_name}"
+        )
+
+    if response is None:
+        return False
+
+    payload = _xui_payload(response)
+    if response.status_code == 200 and payload.get('success', True):
+        logger.info(f"3x-ui client deleted on {server_key}: {config_name}")
+        return True
+
+    logger.error(f"3x-ui failed to delete client {config_name} on {server_key}: "
+                 f"{payload.get('msg') or response.status_code}")
+    return False
+
 
 def convert_bytes_to_display(bytes_val: int) -> str:
     """تبدیل بایت به نمایش خواناتر (MB/GB/TB)"""
@@ -2697,6 +3150,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error and send a message to admins."""
     logger.error("Exception while handling an update:", exc_info=context.error)
+    try:
+        import traceback
+        with open("bot_errors.log", "a", encoding="utf-8") as error_log:
+            error_log.write("\n==== " + datetime.datetime.now().isoformat() + " ====\n")
+            error_log.write("".join(traceback.format_exception(
+                type(context.error), context.error, context.error.__traceback__)))
+            error_log.flush()
+    except Exception:
+        pass
     
     try:
         if update and update.effective_user and update.effective_user.id:
@@ -2710,9 +3172,9 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
                 reply_markup=MAIN_MENU_REPLY_MARKUP
             )
         
-        error_message = f"**❌ خطای جدی در ربات!**\n\n`{context.error}`\n\nUpdate: `{update}`"
+        error_message = "❌ خطای جدی در ربات!\n\n" + str(context.error) + "\n\nUpdate: " + str(update)[:500]
         for admin_id in ADMIN_CHAT_IDS:
-            await context.bot.send_message(admin_id, error_message, parse_mode="Markdown")
+            await context.bot.send_message(admin_id, error_message)
 
     except Exception as e:
         logger.error(f"Failed to handle error or notify user/admin: {e}")
@@ -2775,7 +3237,7 @@ async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"📊 آمار رفرال شما:**\n"
         f"🔸 تعداد کاربران جذب شده: **{referrals_count}** نفر\n"
         f"🔸 مجموع درآمد رفرال: **{referral_earnings:,.0f}** تومان\n"
-        f"🔸 درصد رفرال: **{REFERRAL_PERCENT}%**\n"
+        f"🔸 درصد رفرال: **{user_referral_percent(user_id):g}%**\n"
     )
     
     # نمایش رفرال دهنده (اگر دارد)
@@ -2860,7 +3322,7 @@ async def connection_tutorials_start(update: Update, context: ContextTypes.DEFAU
     """شروع بخش آموزش اتصال"""
     message_text = (
         "📚 **آموزش اتصال**\n\n"
-        "در این بخش می‌توانید آموزش‌های کامل برای اتصال به سرویس VPN را مشاهده کنید.\n"
+        "این بخش بر پایه هسته **V2Ray** است: برنامه‌های پشتیبانی‌شده، هزینه هر برنامه و مراحل اتصال را می‌بینید.\n"
         "لطفاً ابتدا سیستم عامل خود را انتخاب کنید:"
     )
     
@@ -3338,6 +3800,8 @@ async def select_service_plan(update: Update, context: ContextTypes.DEFAULT_TYPE
         callback_data = f"SERVICE_DETAILS_PLAN_{internal_key}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
+    keyboard.append([InlineKeyboardButton("♾️ سرویس بی‌نهایت (سفارشی)", callback_data="CUSTOM_BUY_UNLIMITED")])
+    keyboard.append([InlineKeyboardButton("📦 سرویس حجمی (سفارشی)", callback_data="CUSTOM_BUY_VOLUME")])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت به لیست سرورها", callback_data="back_to_select_server")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -3498,7 +3962,7 @@ async def receive_config_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     internal_key = purchase_data['internal_key']
     price_toman = purchase_data['price_toman']
     server_name = context.user_data.get('server_display_name', 'Server')
-    panel_info = SERVICES[internal_key]
+    panel_info = get_plan_info(internal_key, context)
     
     price_text = f"{price_toman:,.0f} تومان" if price_toman > 0 else "رایگان"
     
@@ -3553,9 +4017,10 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         internal_key = purchase_data['internal_key']
         price_toman = purchase_data['price_toman']
         
-        panel_info = SERVICES[internal_key]
-        volume_gb = int(panel_info['volume'].split(' ')[0])
-        days = panel_info['days']
+        panel_info = get_plan_info(internal_key, context)
+        volume_gb = (int(panel_info['volume_gb']) if 'volume_gb' in panel_info
+                     else int(panel_info['volume'].split(' ')[0]))
+        days = min(int(panel_info['days']), MAX_SUBSCRIPTION_DAYS)
         limit_ip = panel_info['users']
     except Exception as e:
         logger.error(f"Failed to retrieve purchase data in finalize_purchase: {e}")
@@ -3581,6 +4046,7 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             context.user_data.pop('in_conversation', None)
             return ConversationHandler.END
     
+    balance = get_user_balance(user_id)
     # بررسی موجودی فقط برای سرویس‌های پولی
     if price_toman > 0:
         balance = get_user_balance(user_id)
@@ -3615,8 +4081,15 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         volume_display = panel_info['volume'].replace(' گیگ', 'GB')
         price_text = f"{price_toman:,.0f} تومان" if price_toman > 0 else "رایگان"
         
+        links_block = (
+            f"🔗 <b>لینک اشتراک</b> (روی آن بزنید تا کپی شود):\n"
+            f"<code>{html.escape(sub_link)}</code>\n\n"
+        )
+        
         final_message = (
             f"✅ خرید شما با موفقیت انجام شد!\n\n"
+            f"{links_block}"
+            f"━━━━━━━━━━━━━━━\n"
             f"سرویس: {panel_info['label']}\n"
             f"نام کانفیگ: {config_name}\n"
             f"سرور: {server_name}\n"
@@ -3625,27 +4098,16 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         
         if price_toman > 0:
-            final_message += f"موجودی جدید: {new_balance:,.0f} تومان\n\n"
-        else:
-            final_message += f"\n"
+            final_message += f"موجودی جدید: {new_balance:,.0f} تومان\n"
         
         final_message += (
-            f"🔗 لینک اشتراک:\n{sub_link}\n\n"
-            f"🔗 لینک مستقیم کانفیگ (VMess):\n{vmess_link}\n\n"
-            f"توجه: لینک اشتراک را در اپلیکیشن‌های مربوطه وارد کنید. در صورت مشکل، با پشتیبانی تماس بگیرید."
+            f"\n💡 لینک را لمس کنید تا کپی شود یا همین کیوآرکد را در برنامه اسکن کنید. در صورت مشکل، با پشتیبانی تماس بگیرید."
         )
         
         # پیام اضافی برای سرویس تست رایگان
         if internal_key == "FREE_TRIAL":
             final_message += f"\n\n⚠️ توجه: این سرویس تست رایگان فقط 1 روز اعتبار دارد و قابل تمدید نیست."
         
-        try:
-            await query.edit_message_text(final_message)
-            await send_main_menu(user_id, context)
-        except Exception:
-            await context.bot.send_message(user_id, final_message)
-            await send_main_menu(user_id, context)
-            
         # 🔴 ارسال لاگ کامل خرید به ادمین‌ها
         try:
             log_data = {
@@ -3682,7 +4144,28 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     )
             except Exception as e2:
                 logger.error(f"Failed to send simple notification to admins: {e2}")
-                
+        
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        
+        sent_qr = await send_subscription_qr(
+            user_id, sub_link, context,
+            caption=final_message,
+            parse_mode="HTML",
+            reply_markup=MAIN_MENU_REPLY_MARKUP,
+        )
+        if not sent_qr:
+            try:
+                await context.bot.send_message(
+                    user_id, final_message,
+                    parse_mode="HTML",
+                    reply_markup=MAIN_MENU_REPLY_MARKUP,
+                )
+            except Exception as exc:
+                logger.error(f"Failed to send purchase summary to {user_id}: {exc}")
+            
     else:
         # بازگشت وجه فقط برای سرویس‌های پولی
         if price_toman > 0:
@@ -3898,9 +4381,9 @@ async def send_sub_link(update: Update, context: ContextTypes.DEFAULT_TYPE, conf
         
     sub_link = current_service.get('sub_link', 'نامشخص')
     
-    message_text = f"📝 لینک اشتراک سرویس {config_name}:\n\n{sub_link}"
+    message_text = f"📝 <b>لینک اشتراک سرویس {config_name}</b> (روی آن بزنید تا کپی شود):\n\n<code>{html.escape(sub_link)}</code>"
     
-    await context.bot.send_message(user_id, message_text)
+    await context.bot.send_message(user_id, message_text, parse_mode="HTML")
     await show_single_service(update, context, config_name)
 
 async def prompt_renew_service(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3951,12 +4434,20 @@ async def prompt_renew_service(update: Update, context: ContextTypes.DEFAULT_TYP
         button_text = f"➕ {panel['label']} (+{panel['days']} روز، +{volume_display}) - {panel['price_toman']:,.0f} تومان"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
+    # گزینه‌های تمدید مثل بخش خرید: بی‌نهایت و حجمی (سفارشی)
+    keyboard.append([InlineKeyboardButton(
+        f"♾️ تمدید بی‌نهایت (تا {MAX_SUBSCRIPTION_DAYS} روز) - {UNLIMITED_PRICE_PER_USER:,} تومان",
+        callback_data="RENEW_UNLIMITED")])
+    keyboard.append([InlineKeyboardButton(
+        "📦 تمدید حجمی (انتخاب حجم)",
+        callback_data="RENEW_OPEN_VOLUME")])
+
     keyboard.append([InlineKeyboardButton("🔙 بازگشت به سرویس‌های من", callback_data="back_to_services")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     try:
         await query.edit_message_text(
-            f"🔁 تمدید سرویس: {config_name}\nسرور: {current_server_name}\n\nیکی از پلن‌های زیر را انتخاب کنید. حجم و اعتبار جدید به مقادیر فعلی شما اضافه خواهد شد:",
+            f"🔁 تمدید سرویس: {config_name}\nسرور: {current_server_name}\n\nیکی از گزینه‌های زیر را انتخاب کنید. حجم به حجم فعلی اضافه می‌شود و اعتبار حداکثر تا {MAX_SUBSCRIPTION_DAYS} روز شارژ خواهد شد:",
             reply_markup=reply_markup
         )
     except error.BadRequest:
@@ -3964,6 +4455,165 @@ async def prompt_renew_service(update: Update, context: ContextTypes.DEFAULT_TYP
         
     context.user_data['in_conversation'] = True
     return STATE_WAITING_FOR_RENEWAL_CONFIRM
+
+async def _render_renewal_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش اسلایدر حجم برای تمدید"""
+    query = update.callback_query
+    volume_gb = int(context.user_data.get('renewal_vol', 10))
+    volume_gb = max(1, min(VOLUME_MAX_GB, volume_gb))
+    context.user_data['renewal_vol'] = volume_gb
+    price = custom_plan_price('volume', volume_gb, 1)
+    config_name = context.user_data.get('renewal_target_name') or ''
+    text = (
+        f"📦 تمدید حجمی سرویس {config_name}\n\n"
+        f"حجم اضافه: {volume_gb} گیگابایت از {VOLUME_MAX_GB} گیگ\n"
+        f"{custom_slider_bar(volume_gb, VOLUME_MAX_GB)}  {volume_gb}/{VOLUME_MAX_GB}\n"
+        f"⏳ اعتبار: تا حداکثر {MAX_SUBSCRIPTION_DAYS} روز\n\n"
+        f"💰 قیمت: {price:,} تومان\n"
+        f"(هر گیگ {VOLUME_PRICE_PER_GB:,} تومان)"
+    )
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏪ ۱۰-", callback_data="RENEW_VOL_ADJ_-10"),
+         InlineKeyboardButton("◀️ ۱-", callback_data="RENEW_VOL_ADJ_-1"),
+         InlineKeyboardButton("▶️ ۱+", callback_data="RENEW_VOL_ADJ_1"),
+         InlineKeyboardButton("⏩ ۱۰+", callback_data="RENEW_VOL_ADJ_10")],
+        [InlineKeyboardButton("✅ تایید و پرداخت", callback_data="RENEW_VOL_CONFIRM")],
+        [InlineKeyboardButton("🔙 بازگشت به گزینه‌های تمدید",
+                              callback_data=f"PROMPT_RENEW_{config_name}")],
+    ])
+    try:
+        await query.edit_message_text(text, reply_markup=markup)
+    except Exception:
+        await context.bot.send_message(query.from_user.id, text, reply_markup=markup)
+
+
+async def renew_open_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """باز کردن انتخاب حجم برای تمدید"""
+    query = update.callback_query
+    await query.answer("حجم مورد نظر را انتخاب کنید...")
+    context.user_data['renewal_vol'] = 10
+    await _render_renewal_volume(update, context)
+    return STATE_WAITING_FOR_RENEWAL_CONFIRM
+
+
+async def renew_adjust_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """کم/زیاد کردن حجم تمدید"""
+    query = update.callback_query
+    try:
+        delta = int(query.data.split('RENEW_VOL_ADJ_')[1])
+    except (IndexError, ValueError):
+        await query.answer()
+        return STATE_WAITING_FOR_RENEWAL_CONFIRM
+    volume_gb = int(context.user_data.get('renewal_vol', 10)) + delta
+    context.user_data['renewal_vol'] = max(1, min(VOLUME_MAX_GB, volume_gb))
+    await query.answer()
+    await _render_renewal_volume(update, context)
+    return STATE_WAITING_FOR_RENEWAL_CONFIRM
+
+
+async def _apply_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                         price_toman: int, volume_add: int, plan_label: str,
+                         set_unlimited: bool = False, days_add: int = None) -> int:
+    """انجام تمدید (پرداخت، آپدیت پنل، پیام کاربر و لاگ ادمین)"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    config_name = context.user_data.get('renewal_target_name')
+    server_key = context.user_data.get('renewal_target_server_key')
+    server_name = SERVERS_CONFIG.get(server_key, {}).get('display_name', "نامشخص")
+    days_add = days_add or MAX_SUBSCRIPTION_DAYS
+
+    if not config_name or server_key not in SERVERS_CONFIG:
+        try:
+            await query.edit_message_text("❌ اطلاعات تمدید پیدا نشد. لطفاً از «سرویس‌های من» دوباره تلاش کنید.")
+        except Exception:
+            pass
+        await send_main_menu(user_id, context)
+        context.user_data.pop('in_conversation', None)
+        return ConversationHandler.END
+
+    balance = get_user_balance(user_id)
+    if balance < price_toman:
+        try:
+            await query.edit_message_text(f"⚠️ موجودی ناکافی! موجودی شما: {balance:,.0f} تومان.")
+        except Exception:
+            pass
+        await send_main_menu(user_id, context)
+        context.user_data.pop('in_conversation', None)
+        return ConversationHandler.END
+
+    new_balance = update_user_balance(user_id, -price_toman)
+    add_transaction(user_id, "renewal", price_toman, f"تمدید سرویس {config_name} - {plan_label}")
+
+    success, new_total_gb, new_expiry_days = await xui_update_client_v2(
+        server_key, user_id, config_name, volume_add, days_add, set_unlimited=set_unlimited
+    )
+
+    if not success:
+        update_user_balance(user_id, price_toman)
+        add_transaction(user_id, "deposit", price_toman, f"بازگشت وجه تمدید ناموفق - {config_name}")
+        try:
+            await query.edit_message_text("❌ تمدید انجام نشد و مبلغ به کیف پول شما بازگشت داده شد.")
+        except Exception:
+            pass
+        await send_main_menu(user_id, context)
+        context.user_data.pop('in_conversation', None)
+        return ConversationHandler.END
+
+    volume_line = "نامحدود" if set_unlimited else (f"+{volume_add} GB" if volume_add else "بدون تغییر")
+    final_message = (
+        f"✅ تمدید سرویس {config_name} با موفقیت انجام شد!\n\n"
+        f"گزینه: {plan_label}\n"
+        f"افزایش حجم: {volume_line}\n"
+        f"اعتبار: تا حداکثر {new_expiry_days} روز (سقف {MAX_SUBSCRIPTION_DAYS} روز)\n\n"
+        f"موجودی جدید: {new_balance:,.0f} تومان\n"
+        f"حجم کل (تقریبی): {new_total_gb:.2f} GB"
+    )
+    try:
+        await query.edit_message_text(final_message)
+    except Exception:
+        await context.bot.send_message(user_id, final_message, )
+
+    try:
+        for admin_id in ADMIN_CHAT_IDS:
+            await context.bot.send_message(
+                admin_id,
+                f"🔁 تمدید سرویس\n\n"
+                f"👤 کاربر: {format_user_info(user_id, show_copyable=False)}\n"
+                f"📛 کانفیگ: `{config_name}`\n"
+                f"🌐 سرور: {server_name}\n"
+                f"🎁 گزینه: {plan_label}\n"
+                f"💰 مبلغ: {price_toman:,.0f} تومان\n"
+                f"📅 اعتبار: {new_expiry_days} روز\n"
+                f"🕒 زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}",
+                parse_mode="Markdown"
+            )
+    except Exception as exc:
+        logger.error(f"Failed to send renewal log to admins: {exc}")
+
+    await send_main_menu(user_id, context)
+    context.user_data.pop('in_conversation', None)
+    context.user_data.pop('renewal_target_name', None)
+    context.user_data.pop('renewal_target_server_key', None)
+    context.user_data.pop('renewal_vol', None)
+    return ConversationHandler.END
+
+
+async def renew_confirm_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """تایید و پرداخت تمدید حجمی"""
+    query = update.callback_query
+    await query.answer("در حال اعمال تمدید...")
+    volume_gb = int(context.user_data.get('renewal_vol', 10))
+    price = custom_plan_price('volume', volume_gb, 1)
+    return await _apply_renewal(update, context, price, volume_gb, f"📦 تمدید حجمی {volume_gb} گیگ")
+
+
+async def renew_unlimited(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """تمدید بی‌نهایت"""
+    query = update.callback_query
+    await query.answer("در حال اعمال تمدید...")
+    price = UNLIMITED_PRICE_PER_USER
+    return await _apply_renewal(update, context, price, 0, "♾️ تمدید بی‌نهایت", set_unlimited=True)
+
 
 async def finalize_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """نهایی کردن تمدید سرویس"""
@@ -4952,13 +5602,17 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         return await referral_earnings_history_admin(update, context, target_user_id, page)
     
     # هندلرهای جدید برای /allmembers
-    if data.startswith("allmembers_page_"):
-        page = int(data.split("allmembers_page_")[1])
-        return await show_all_users_list(update, context, page)
-    
     if data == "allmembers_page_info":
         await query.answer("شماره صفحه جاری", show_alert=False)
         return
+    
+    if data.startswith("allmembers_page_"):
+        try:
+            page = int(data.split("allmembers_page_")[1])
+        except ValueError:
+            await query.answer("❌ شماره صفحه نامعتبر است.", show_alert=True)
+            return
+        return await show_all_users_list(update, context, page)
     
     if data == "close_allmembers":
         try:
@@ -5063,14 +5717,544 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         return await send_sub_link(update, context, config_name)
     
     # اگر هیچکدام از الگوها مطابقت نکرد
+    if data.startswith("check_each_service_"):
+        return await check_each_service_handler(update, context, int(data.split("check_each_service_")[1]))
+
+    if data.startswith("delete_service_ask_"):
+        parts = data.split("_")
+        return await delete_service_ask(update, context, int(parts[3]), int(parts[4]))
+
+    if data.startswith("delete_service_do_"):
+        parts = data.split("_")
+        return await delete_service_do(update, context, int(parts[3]), int(parts[4]))
+
+    if data.startswith("delete_services_"):
+        return await delete_services_menu(update, context, int(data.split("delete_services_")[1]))
+
+    if data.startswith("export_referrals_"):
+        return await export_referrals_csv(update, context, int(data.split("export_referrals_")[1]))
+
+    if data.startswith("contact_user_"):
+        return await contact_user_start(update, context, int(data.split("contact_user_")[1]))
+
     await query.answer("❌ این دکمه هنوز پیاده‌سازی نشده است.", show_alert=True)
+
+
+# ============================================================
+# --- ابزارهای ادمین: بررسی/حذف سرویس‌ها، خروجی رفرال، تماس با کاربر ---
+# ============================================================
+
+async def _safe_edit_or_send(query, context, text, reply_markup=None):
+    """ویرایش پیام؛ در صورت خطا ارسال پیام جدید"""
+    try:
+        await query.edit_message_text(text, reply_markup=reply_markup)
+    except Exception:
+        try:
+            await context.bot.send_message(query.from_user.id, text, reply_markup=reply_markup)
+        except Exception:
+            pass
+
+
+def _admin_back_keyboard(target_user_id, callback=None, label="🔙 بازگشت"):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(label, callback_data=callback or f"service_details_{target_user_id}_1")
+    ]])
+
+
+async def check_each_service_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int):
+    """بررسی تک‌تک سرویس‌های یک کاربر روی پنل"""
+    query = update.callback_query
+    services = get_user_services(target_user_id)
+
+    if not services:
+        await _safe_edit_or_send(
+            query, context,
+            f"📂 کاربر {format_user_info(target_user_id, show_copyable=False)} سرویسی ندارد.",
+            _admin_back_keyboard(target_user_id, callback=f"refresh_profile_{target_user_id}")
+        )
+        return
+
+    lines = [f"🔍 وضعیت سرویس‌های {format_user_info(target_user_id, show_copyable=False)}", ""]
+    for index, service in enumerate(services, 1):
+        config_name = service.get('config_name', 'نامشخص')
+        server_key = service.get('server_key')
+        server_name = SERVERS_CONFIG.get(server_key, {}).get('display_name', server_key or 'نامشخص')
+
+        _, client = await xui_get_client_info_by_name(server_key, config_name)
+        if not client:
+            lines.append(f"{index}. {config_name} ({server_name})\n   ❌ روی پنل پیدا نشد\n")
+            continue
+
+        used = int(client.get('up') or 0) + int(client.get('down') or 0)
+        total = int(client.get('totalGB') or 0)
+        used_text = convert_bytes_to_display(used)
+        total_text = convert_bytes_to_display(total) if total > 0 else "نامحدود"
+
+        expiry_time = int(client.get('expiryTime') or 0)
+        if expiry_time > 0:
+            expiry_dt = datetime.datetime.fromtimestamp(expiry_time / 1000)
+            days_left = max((expiry_dt - datetime.datetime.now()).days, 0)
+            expiry_text = f"{expiry_dt.strftime('%Y/%m/%d')} ({days_left} روز مانده)"
+        else:
+            expiry_text = "نامحدود"
+
+        status = "🟢 فعال" if client.get('enable') else "🔴 غیرفعال"
+        lines.append(f"{index}. {config_name} ({server_name})\n"
+                     f"   {status} | مصرف: {used_text} از {total_text}\n"
+                     f"   انقضا: {expiry_text}\n")
+
+    message = "\n".join(lines)
+    if len(message) > 4000:
+        message = message[:3990] + "\n…"
+    await _safe_edit_or_send(query, context, message,
+                             _admin_back_keyboard(target_user_id, callback=f"service_details_{target_user_id}_1"))
+
+
+async def delete_services_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int):
+    """لیست سرویس‌های کاربر برای حذف"""
+    query = update.callback_query
+    services = get_user_services(target_user_id)
+
+    if not services:
+        await _safe_edit_or_send(
+            query, context,
+            f"📂 کاربر {format_user_info(target_user_id, show_copyable=False)} سرویسی برای حذف ندارد.",
+            _admin_back_keyboard(target_user_id, callback=f"refresh_profile_{target_user_id}")
+        )
+        return
+
+    keyboard = []
+    for index, service in enumerate(services):
+        keyboard.append([InlineKeyboardButton(
+            f"🗑️ {service.get('config_name', 'نامشخص')}",
+            callback_data=f"delete_service_ask_{target_user_id}_{index}"
+        )])
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data=f"refresh_profile_{target_user_id}")])
+
+    await _safe_edit_or_send(
+        query, context,
+        f"🗑️ حذف سرویس‌های {format_user_info(target_user_id, show_copyable=False)}\n\n"
+        "کدام سرویس حذف شود؟ (هم از پنل و هم از حساب کاربر)",
+        InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def delete_service_ask(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int, index: int):
+    """درخواست تایید حذف یک سرویس"""
+    query = update.callback_query
+    services = get_user_services(target_user_id)
+    if index < 0 or index >= len(services):
+        await _safe_edit_or_send(
+            query, context, "❌ سرویس پیدا نشد (لیست تغییر کرده است).",
+            _admin_back_keyboard(target_user_id, callback=f"delete_services_{target_user_id}")
+        )
+        return
+
+    config_name = services[index].get('config_name', 'نامشخص')
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ بله، حذف کن", callback_data=f"delete_service_do_{target_user_id}_{index}")],
+        [InlineKeyboardButton("🔙 انصراف", callback_data=f"delete_services_{target_user_id}")]
+    ])
+    await _safe_edit_or_send(
+        query, context,
+        f"⚠️ حذف سرویس {config_name}\n\n"
+        "این کلاینت از پنل حذف می‌شود و لینک اتصال کاربر از کار می‌افتد. مطمئن هستید؟",
+        keyboard
+    )
+
+
+async def delete_service_do(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int, index: int):
+    """حذف سرویس از پنل و از حساب کاربر"""
+    query = update.callback_query
+    services = get_user_services(target_user_id)
+    if index < 0 or index >= len(services):
+        await _safe_edit_or_send(
+            query, context, "❌ سرویس پیدا نشد (لیست تغییر کرده است).",
+            _admin_back_keyboard(target_user_id, callback=f"delete_services_{target_user_id}")
+        )
+        return
+
+    service = services[index]
+    config_name = service.get('config_name', 'نامشخص')
+    server_key = service.get('server_key')
+
+    removed_from_panel = await xui_delete_client(server_key, config_name)
+    if not removed_from_panel:
+        await _safe_edit_or_send(
+            query, context,
+            f"❌ حذف سرویس {config_name} از پنل ناموفق بود.\n"
+            "سرویس در حساب کاربر باقی ماند تا لینک کاربر بی‌دلیل از کار نیفتد.",
+            _admin_back_keyboard(target_user_id, callback=f"delete_services_{target_user_id}")
+        )
+        return
+
+    users = load_users()
+    str_target = str(target_user_id)
+    if str_target in users and 'services' in users[str_target]:
+        users[str_target]['services'] = [
+            s for s in users[str_target]['services'] if s.get('config_name') != config_name
+        ]
+        save_users(users)
+
+    await send_admin_action_log(context, query.from_user.id, 'delete', {
+        'target_user_id': target_user_id,
+        'config_name': config_name,
+        'server_key': server_key
+    })
+
+    await _safe_edit_or_send(
+        query, context,
+        f"✅ سرویس {config_name} از پنل و از حساب کاربر حذف شد.",
+        _admin_back_keyboard(target_user_id, callback=f"service_details_{target_user_id}_1")
+    )
+
+
+async def export_referrals_csv(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int):
+    """ارسال خروجی CSV از کاربران جذب‌شده"""
+    query = update.callback_query
+    history = get_referral_history(target_user_id)
+
+    if not history:
+        await query.answer("هیچ رفرالی برای این کاربر ثبت نشده است.", show_alert=True)
+        return
+
+    users = load_users()
+    rows = ["user_id,date,status,balance,services_count"]
+    for item in history:
+        ref_id = item.get('user_id')
+        user_data = users.get(str(ref_id), {}) or {}
+        rows.append(",".join([
+            str(ref_id),
+            str(item.get('date', '')),
+            str(item.get('status', 'active')),
+            f"{float(user_data.get('balance', 0) or 0):.0f}",
+            str(len(user_data.get('services', []) or [])),
+        ]))
+
+    csv_bytes = ("\n".join(rows) + "\n").encode('utf-8-sig')
+    try:
+        await context.bot.send_document(
+            chat_id=query.from_user.id,
+            document=InputFile(io.BytesIO(csv_bytes), filename=f"referrals_{target_user_id}.csv"),
+            caption=(f"📥 خروجی کاربران جذب‌شده "
+                     f"{format_user_info(target_user_id, show_copyable=False)}\n"
+                     f"تعداد: {len(history)}")
+        )
+        await query.answer("فایل ارسال شد.")
+    except Exception as exc:
+        logger.error(f"Failed to export referrals csv for {target_user_id}: {exc}")
+        await query.answer("ارسال فایل ناموفق بود.", show_alert=True)
+
+
+async def contact_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int):
+    """شروع ارسال پیام مستقیم ادمین به کاربر"""
+    query = update.callback_query
+    context.user_data['contact_user_target'] = target_user_id
+    await _safe_edit_or_send(
+        query, context,
+        f"✉️ پیام خود را برای کاربر {format_user_info(target_user_id, show_copyable=False)} بنویسید.\n"
+        "پیام بعدی شما مستقیماً برای کاربر ارسال می‌شود.",
+        InlineKeyboardMarkup([[InlineKeyboardButton("🔙 انصراف", callback_data="back_to_main_from_admin")]])
+    )
+
+
+
+# ============================================================
+# --- خرید سفارشی: سرویس بی‌نهایت و سرویس حجمی با اسلایدر ---
+# ============================================================
+
+def custom_plan_price(mode: str, volume_gb: int, users: int) -> int:
+    """قیمت سرویس سفارشی
+    بی‌نهایت: ۴۰۰٬۰۰۰ تومان به ازای هر کاربر
+    حجمی: حجم × ۴٬۰۰۰ تومان و برای هر کاربر اضافه ضریب ۱.۵ تصاعدی"""
+    if mode == 'unlimited':
+        return UNLIMITED_PRICE_PER_USER * users
+    return int(round(volume_gb * VOLUME_PRICE_PER_GB * (CUSTOM_USER_MULTIPLIER ** (users - 1))))
+
+
+def custom_slider_bar(value: int, maximum: int, width: int = 10) -> str:
+    """نوار کشویی که از چپ به راست پر می‌شود"""
+    filled = int(round(width * value / maximum)) if maximum else 0
+    filled = max(0, min(width, filled))
+    return "▰" * filled + "▱" * (width - filled)
+
+
+def get_plan_info(internal_key: str, context=None):
+    """اطلاعات پلن؛ پلن‌های سفارشی از purchase_data خوانده می‌شوند"""
+    if context is not None:
+        plan = (context.user_data.get('purchase_data') or {}).get('plan_info')
+        if plan:
+            return plan
+    return SERVICES.get(internal_key) or CUSTOM_PLANS.get(internal_key)
+
+
+def _custom_selection(context):
+    sel = context.user_data.get('custom_buy')
+    if not sel:
+        sel = {'mode': 'volume', 'volume_gb': 10, 'users': 1}
+        context.user_data['custom_buy'] = sel
+    return sel
+
+
+async def _render_custom_buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    sel = _custom_selection(context)
+    mode = sel['mode']
+    users = sel['users']
+    volume_gb = sel['volume_gb']
+    price = custom_plan_price(mode, volume_gb, users)
+
+    if mode == 'unlimited':
+        title = "♾️ سرویس بی‌نهایت"
+        body = "حجم: نامحدود\n"
+        volume_rows = []
+        price_hint = f"(هر کاربر {UNLIMITED_PRICE_PER_USER:,} تومان)"
+    else:
+        title = "📦 سرویس حجمی"
+        body = (f"حجم: {volume_gb} گیگابایت از {VOLUME_MAX_GB} گیگ\n"
+                f"{custom_slider_bar(volume_gb, VOLUME_MAX_GB)}  {volume_gb}/{VOLUME_MAX_GB}\n")
+        volume_rows = [
+            [InlineKeyboardButton("⏪ ۱۰-", callback_data="CUSTOM_ADJ_VOL_-10"),
+             InlineKeyboardButton("◀️ ۱-", callback_data="CUSTOM_ADJ_VOL_-1"),
+             InlineKeyboardButton("▶️ ۱+", callback_data="CUSTOM_ADJ_VOL_1"),
+             InlineKeyboardButton("⏩ ۱۰+", callback_data="CUSTOM_ADJ_VOL_10")],
+        ]
+        price_hint = (f"(هر گیگ {VOLUME_PRICE_PER_GB:,} تومان؛ "
+                      f"هر کاربر اضافه قیمت را {CUSTOM_USER_MULTIPLIER} برابر می‌کند)")
+
+    text = (
+        f"{title} (سفارشی)\n\n"
+        f"{body}"
+        f"کاربران (بر اساس IP): {users} از {CUSTOM_MAX_USERS}\n"
+        f"{custom_slider_bar(users, CUSTOM_MAX_USERS)}\n"
+        f"⏳ اعتبار: {CUSTOM_DAYS} روز\n\n"
+        f"💰 قیمت نهایی: {price:,} تومان\n"
+        f"{price_hint}"
+    )
+
+    keyboard = volume_rows + [
+        [InlineKeyboardButton("👥 ۱-", callback_data="CUSTOM_ADJ_USR_-1"),
+         InlineKeyboardButton("👥 ۱+", callback_data="CUSTOM_ADJ_USR_1")],
+        [InlineKeyboardButton("✅ تایید و خرید", callback_data="CUSTOM_CONFIRM")],
+        [InlineKeyboardButton("🔙 بازگشت به لیست پلن‌ها",
+                              callback_data=f"SELECT_SERVER_{context.user_data.get('selected_server', 'Server_1')}")],
+    ]
+    markup = InlineKeyboardMarkup(keyboard)
+    try:
+        await query.edit_message_text(text, reply_markup=markup)
+    except Exception:
+        await context.bot.send_message(query.from_user.id, text, reply_markup=markup)
+
+
+async def custom_buy_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """باز کردن خرید سفارشی (بی‌نهایت یا حجمی)"""
+    query = update.callback_query
+    await query.answer("در حال باز کردن خرید سفارشی...")
+    mode = 'unlimited' if query.data.endswith('UNLIMITED') else 'volume'
+    context.user_data['custom_buy'] = {'mode': mode, 'volume_gb': 10, 'users': 1}
+    context.user_data['in_conversation'] = True
+    await _render_custom_buy(update, context)
+    return STATE_CUSTOM_BUILD
+
+
+async def custom_buy_adjust(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """کم/زیاد کردن حجم یا تعداد کاربر با اسلایدر"""
+    query = update.callback_query
+    try:
+        _, _, field, delta = query.data.split('_')
+        delta = int(delta)
+    except Exception:
+        await query.answer()
+        return STATE_CUSTOM_BUILD
+
+    sel = _custom_selection(context)
+    if field == 'VOL':
+        sel['volume_gb'] = max(1, min(VOLUME_MAX_GB, sel['volume_gb'] + delta))
+    elif field == 'USR':
+        sel['users'] = max(1, min(CUSTOM_MAX_USERS, sel['users'] + delta))
+
+    await query.answer()
+    await _render_custom_buy(update, context)
+    return STATE_CUSTOM_BUILD
+
+
+async def custom_buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """ثبت پلن سفارشی و رفتن به مرحله نام کانفیگ"""
+    query = update.callback_query
+    await query.answer("در حال آماده‌سازی خرید...")
+    user_id = query.from_user.id
+
+    sel = _custom_selection(context)
+    mode = sel['mode']
+    users = sel['users']
+    volume_gb = sel['volume_gb'] if mode == 'volume' else 0
+    price = custom_plan_price(mode, volume_gb, users)
+
+    balance = get_user_balance(user_id)
+    if balance < price:
+        try:
+            await query.edit_message_text(
+                f"⚠️ موجودی ناکافی!\n\nقیمت این سرویس {price:,} تومان است اما موجودی شما {balance:,} تومان است.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 بازگشت به لیست پلن‌ها",
+                                         callback_data=f"SELECT_SERVER_{context.user_data.get('selected_server', 'Server_1')}")
+                ]])
+            )
+        except Exception:
+            pass
+        await send_main_menu(user_id, context)
+        return ConversationHandler.END
+
+    if mode == 'unlimited':
+        label = f"♾️ بی‌نهایت ({users} کاربر)"
+        volume_text = "نامحدود"
+        volume_number = 0
+    else:
+        label = f"📦 حجمی {volume_gb} گیگ ({users} کاربر)"
+        volume_text = f"{volume_gb} گیگ"
+        volume_number = volume_gb
+
+    plan_info = {
+        'label': label,
+        'users': users,
+        'volume': volume_text,
+        'volume_gb': volume_number,
+        'days': CUSTOM_DAYS,
+        'price_toman': price,
+        'description': 'سرویس سفارشی',
+    }
+
+    internal_key = f"CUSTOM_{mode.upper()}_{int(time.time() * 1000)}"
+    CUSTOM_PLANS[internal_key] = plan_info
+    context.user_data['purchase_data'] = {
+        'internal_key': internal_key,
+        'price_toman': price,
+        'plan_info': plan_info,
+    }
+    context.user_data.pop('custom_buy', None)
+
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    await context.bot.send_message(
+        user_id,
+        "لطفاً یک نام انگلیسی دلخواه برای کانفیگ خود وارد کنید.\n"
+        "(مثال: myconfig123, Ali-Vpn)\n"
+        "این نام باید بین ۳ تا ۲۰ کاراکتر باشد و فقط شامل حروف انگلیسی، اعداد، خط تیره (-) یا آندرلاین (_) باشد.",
+        reply_markup=ReplyKeyboardMarkup([["❌ لغو عملیات"]], resize_keyboard=True)
+    )
+    context.user_data['in_conversation'] = True
+    return STATE_WAITING_FOR_CONFIG_NAME
+
+
+# ============================================================
+# --- ارسال فایل کانفیگ به‌صورت قابل دانلود ---
+
+# ============================================================
+# --- کیوآرکد لینک اشتراک ---
+# ============================================================
+
+def build_qr_png(data: str):
+    """ساخت تصویر PNG از کیوآرکد (در صورت نصب بودن کتابخانه qrcode)"""
+    try:
+        import qrcode
+    except ImportError:
+        logger.warning("qrcode library is not installed; skipping QR code")
+        return None
+    try:
+        qr = qrcode.QRCode(box_size=8, border=2)
+        qr.add_data(data)
+        qr.make(fit=True)
+        image = qr.make_image(fill_color="black", back_color="white")
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
+    except Exception as exc:
+        logger.error(f"Failed to build QR code: {exc}")
+        return None
+
+
+async def send_subscription_qr(chat_id: int, sub_link: str, context, caption: str = None,
+                                parse_mode: str = None, reply_markup=None) -> bool:
+    """ارسال کیوآرکد لینک اشتراک تا با اسکن در برنامه اضافه شود"""
+    if not sub_link:
+        return False
+    png = build_qr_png(sub_link)
+    if not png:
+        return False
+    if caption is None:
+        caption = (
+            "📷 کیوآرکد لینک اشتراک شما\n"
+            "در برنامه، گزینه Scan QR Code را بزنید و این تصویر را اسکن کنید.\n"
+            f"{sub_link}"
+        )
+    try:
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=InputFile(io.BytesIO(png), filename="subscription_qr.png"),
+            caption=caption,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+        )
+        return True
+    except Exception as exc:
+        logger.error(f"Failed to send QR code to {chat_id}: {exc}")
+        return False
+
+
+async def track_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ثبت @username و نام تلگرام کاربر در دیتابیس (برای نمایش در پنل ادمین)"""
+    try:
+        user = update.effective_user
+        if user is not None:
+            storage.touch_profile(user.id, user.username, user.first_name)
+    except Exception as exc:
+        logger.debug(f"profile tracking failed: {exc}")
+
+
+_SINGLE_INSTANCE_HANDLE = None
+
+
+def ensure_single_instance() -> None:
+    """جلوگیری از اجرای همزمان دو نسخهٔ ربات با یک توکن (خطای Conflict در getUpdates)"""
+    global _SINGLE_INSTANCE_HANDLE
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        import hashlib
+        tag = hashlib.md5(str(BOT_TOKEN or "").encode("utf-8", "ignore")).hexdigest()[:16]
+        _SINGLE_INSTANCE_HANDLE = ctypes.windll.kernel32.CreateMutexW(None, False, f"Local\\vpn-bot-{tag}")
+        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            logger.error("Another instance of this bot is already running (same token).")
+            print("\n[!] این ربات همین حالا در حال اجراست. ابتدا نسخهٔ قبلی را ببندید.\n")
+            raise SystemExit(1)
+    except SystemExit:
+        raise
+    except Exception as lock_error:
+        logger.warning(f"Single-instance lock skipped: {lock_error}")
+
 
 def main() -> None:
     """شروع به کار ربات"""
+    ensure_single_instance()
+    # اجرای پنل وب ادمین همراه ربات (پورت 9997)
+    try:
+        import admin_panel
+        admin_panel.start_panel_thread(bot_token=BOT_TOKEN)
+    except Exception as panel_error:
+        logger.error(f"Failed to start admin panel: {panel_error}")
+    
     # ایجاد Application با روش جدید
     application = Application.builder().token(BOT_TOKEN).build()
 
     # ========== تغییر 1: اضافه کردن هندلرهای اصلی در ابتدا ==========
+    # ثبت پروفایل تلگرام کاربران برای پنل ادمین
+    application.add_handler(MessageHandler(filters.ALL, track_user_profile), group=-1)
+    application.add_handler(CallbackQueryHandler(track_user_profile), group=-1)
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("add", add_balance_command))  # دستور ادمین
     application.add_handler(CommandHandler("addall", addall_command))  # دستور جدید ادمین
@@ -5089,23 +6273,18 @@ def main() -> None:
     # مکالمه خرید سرویس جدید
     purchase_conv_handler = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.Text("🛍️ خرید سرویس") & ~filters.Chat(ADMIN_CHAT_IDS), select_server_for_purchase),
+            MessageHandler(filters.Text("🛍️ خرید سرویس"), select_server_for_purchase),
             CallbackQueryHandler(select_service_plan, pattern=r'^SELECT_SERVER_'),
         ],
         states={
             STATE_SELECT_SERVER: [
                 CallbackQueryHandler(select_service_plan, pattern=r'^SELECT_SERVER_'),
                 CallbackQueryHandler(prompt_for_config_name, pattern=r'^SERVICE_DETAILS_PLAN_'),
-                CallbackQueryHandler(prompt_for_config_name, pattern=r'^CONFIRM_PLAN_PURCHASE_'),
-                CallbackQueryHandler(prompt_for_config_name, pattern=r'^CONFIRM_PURCHASE_'),
-                CallbackQueryHandler(finalize_purchase, pattern=r'^CONFIRM_PURCHASE_'),
             ],
             STATE_WAITING_FOR_CONFIG_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_config_name),
             ],
             STATE_WAITING_FOR_CONFIG_NAME_CONFIRM: [
-                CallbackQueryHandler(prompt_for_config_name, pattern=r'^CONFIRM_PLAN_PURCHASE_'),
-                CallbackQueryHandler(prompt_for_config_name, pattern=r'^CONFIRM_PURCHASE_'),
                 CallbackQueryHandler(finalize_purchase, pattern=r'^CONFIRM_PURCHASE_'),
                 CallbackQueryHandler(back_to_config_name_prompt, pattern=r'^back_to_config_name_prompt'),
             ],
@@ -5120,7 +6299,7 @@ def main() -> None:
 
     # مکالمه شارژ کیف پول (کارت به کارت)
     wallet_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Text("💰 شارژ کیف پول") & ~filters.Chat(ADMIN_CHAT_IDS), wallet_start)],
+        entry_points=[MessageHandler(filters.Text("💰 شارژ کیف پول"), wallet_start)],
         states={
             STATE_WAITING_FOR_RECEIPT: [
                 MessageHandler(filters.PHOTO, wallet_receive_receipt),
@@ -5140,7 +6319,7 @@ def main() -> None:
 
     # مکالمه پشتیبانی
     support_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Text("📞 پشتیبانی") & ~filters.Chat(ADMIN_CHAT_IDS), support_start)],
+        entry_points=[MessageHandler(filters.Text("📞 پشتیبانی"), support_start)],
         states={
             STATE_GET_TICKET: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, support_receive_message),
@@ -5157,17 +6336,68 @@ def main() -> None:
     )
     application.add_handler(support_conv_handler)
 
+    # مکالمه خرید سفارشی (بی‌نهایت / حجمی با اسلایدر)
+    custom_buy_conv_handler = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(custom_buy_open, pattern=r'^CUSTOM_BUY_'),
+        ],
+        states={
+            STATE_CUSTOM_BUILD: [
+                CallbackQueryHandler(custom_buy_adjust, pattern=r'^CUSTOM_ADJ_'),
+                CallbackQueryHandler(custom_buy_confirm, pattern=r'^CUSTOM_CONFIRM$'),
+            ],
+            STATE_WAITING_FOR_CONFIG_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_config_name),
+            ],
+            STATE_WAITING_FOR_CONFIG_NAME_CONFIRM: [
+                CallbackQueryHandler(finalize_purchase, pattern=r'^CONFIRM_PURCHASE_'),
+                CallbackQueryHandler(back_to_config_name_prompt, pattern=r'^back_to_config_name_prompt'),
+            ],
+        },
+        fallbacks=[
+            MessageHandler(filters.Text("❌ لغو عملیات"), cancel_conversation),
+            CommandHandler("cancel", cancel_conversation),
+        ],
+        allow_reentry=True,
+    )
+    application.add_handler(custom_buy_conv_handler)
+
     # سایر هندلرهای پیام
-    application.add_handler(MessageHandler(filters.Text("👤 حساب من") & ~filters.Chat(ADMIN_CHAT_IDS), my_account))
-    application.add_handler(MessageHandler(filters.Text("📂 سرویس‌های من") & ~filters.Chat(ADMIN_CHAT_IDS), my_services))
-    application.add_handler(MessageHandler(filters.Text("🔗 لینک رفرال") & ~filters.Chat(ADMIN_CHAT_IDS), my_referral))
-    application.add_handler(MessageHandler(filters.Text("📚 آموزش اتصال") & ~filters.Chat(ADMIN_CHAT_IDS), connection_tutorials_start))
+    application.add_handler(MessageHandler(filters.Text("👤 حساب من"), my_account))
+    application.add_handler(MessageHandler(filters.Text("📂 سرویس‌های من"), my_services))
+    application.add_handler(MessageHandler(filters.Text("🔗 لینک رفرال"), my_referral))
+    application.add_handler(MessageHandler(filters.Text("📚 آموزش اتصال"), connection_tutorials_start))
     
     # هندلر برای دریافت ورودی‌های ویرایش ادمین
     application.add_handler(MessageHandler(
         filters.Chat(ADMIN_CHAT_IDS) & filters.TEXT & ~filters.COMMAND,
         handle_admin_edit_input
     ))
+
+
+    # مکالمه تمدید / افزایش حجم سرویس
+    renewal_conv_handler = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(prompt_renew_service, pattern=r'^PROMPT_RENEW_'),
+        ],
+        states={
+            STATE_WAITING_FOR_RENEWAL_CONFIRM: [
+                CallbackQueryHandler(finalize_renewal, pattern=r'^RENEW_SELECT_'),
+                CallbackQueryHandler(renew_unlimited, pattern=r'^RENEW_UNLIMITED$'),
+                CallbackQueryHandler(renew_open_volume, pattern=r'^RENEW_OPEN_VOLUME$'),
+                CallbackQueryHandler(renew_adjust_volume, pattern=r'^RENEW_VOL_ADJ_'),
+                CallbackQueryHandler(renew_confirm_volume, pattern=r'^RENEW_VOL_CONFIRM$'),
+                CallbackQueryHandler(prompt_renew_service, pattern=r'^PROMPT_RENEW_'),
+                CallbackQueryHandler(back_to_services, pattern=r'^back_to_services$'),
+            ],
+        },
+        fallbacks=[
+            MessageHandler(filters.Text("❌ لغو عملیات"), cancel_conversation),
+            CommandHandler("cancel", cancel_conversation),
+        ],
+        allow_reentry=True
+    )
+    application.add_handler(renewal_conv_handler)
 
     # هندلر جامع برای دکمه‌های شیشه‌ای
     application.add_handler(CallbackQueryHandler(button_callback_handler))

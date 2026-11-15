@@ -1,0 +1,16 @@
+# runtime data & secrets
+botdata.db
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# python
+__pycache__/
+*.pyc
+
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
