@@ -381,6 +381,12 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length).decode("utf-8") if length else ""
         return {k: v[0] for k, v in urllib.parse.parse_qs(body).items()}
 
+    def read_form_multi(self):
+        """همهٔ مقادیر هر فیلد (برای چک‌باکس‌های چندگانه)"""
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length).decode("utf-8") if length else ""
+        return urllib.parse.parse_qs(body)
+
     def flash_from_query(self, qs):
         message = qs.get("flash")
         if not message:
@@ -436,6 +442,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.action_login()
             if not self.require_auth():
                 return
+            if path == "/services/delete":
+                return self.action_services_bulk_delete()
             if path == "/users/add":
                 return self.action_add_user()
             if path == "/announce":
@@ -1049,7 +1057,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.redirect(flash(back, "اطلاعات سرویس از پنل 3x-ui تازه شد؛ تغییری برای ذخیره نبود."))
             renamed = find_client_by_uuid(server_key, service.get("uuid"))
             if not renamed:
-                return self.redirect(flash(back, "کلاینت با این نام و UUID در پنل 3x-ui پیدا نشد.", "bad"))
+                state = (xui_api.client_state(server_key, name)
+                         if server_key in xui_api.server_keys() else xui_api.MISSING)
+                if state == xui_api.UNREACHABLE:
+                    return self.redirect(flash(
+                        back, "پنل 3x-ui پاسخ نداد؛ برای جلوگیری از حذف اشتباه، سرویس در ربات دست‌نخورده ماند.", "bad"))
+                db.delete_service_row(user_id, name)
+                self.notify_service_deleted(user_id, name)
+                return self.redirect(flash(
+                    f"/user/{uid}",
+                    f"کلاینت «{name}» در پنل 3x-ui نبود (حذف شده بود)؛ از ربات هم حذف شد و به کاربر اطلاع داده شد."))
             new_link = xui_api.sub_link_for(renamed, service.get("sub_link") or "") or service.get("sub_link")
             db.rename_service(user_id, name, renamed)
             if new_link:
@@ -1088,6 +1105,38 @@ class Handler(BaseHTTPRequestHandler):
         if sub_link:
             lines += ["", f"🔗 لینک اشتراک: {sub_link}"]
         telegram_send(user_id, "\n".join(lines))
+
+    def notify_service_deleted(self, user_id, name):
+        """اطلاع‌رسانی حذف سرویس به کاربر"""
+        if not BOT_TOKEN:
+            return
+        telegram_send(user_id, "\n".join([
+            "🗑 سرویس شما حذف شد",
+            "",
+            f"📛 نام کانفیگ: {name}",
+            "",
+            "برای خرید سرویس جدید از منوی ربات استفاده کنید.",
+        ]))
+
+    def remove_service_everywhere(self, user_id, name):
+        """حذف سرویس از پنل 3x-ui (اگر وجود داشته باشد) و سپس از دیتابیس ربات"""
+        user = db.get_user(user_id) or {}
+        service = next((s for s in user.get("services") or []
+                        if str(s.get("config_name")) == name), None)
+        if not service:
+            return False, "سرویس در دیتابیس پیدا نشد."
+        server_key = service.get("server_key") or "Server_1"
+        if server_key in xui_api.server_keys():
+            state = xui_api.client_state(server_key, name)
+            if state == xui_api.UNREACHABLE:
+                return False, "پنل 3x-ui پاسخ نداد؛ برای جلوگیری از حذف نیمه‌کاره چیزی حذف نشد."
+            if state == xui_api.EXISTS:
+                ok, err = xui_api.delete_client(server_key, name)
+                if not ok:
+                    return False, f"حذف از پنل 3x-ui انجام نشد: {err}"
+        db.delete_service_row(user_id, name)
+        self.notify_service_deleted(user_id, name)
+        return True, "حذف شد"
 
     # ---------- user actions ----------
     def action_set_balance(self, uid):
@@ -1229,9 +1278,37 @@ class Handler(BaseHTTPRequestHandler):
     def action_delete_service(self, uid):
         form = self.read_form()
         config_name = (form.get("config_name") or "").strip()
-        if config_name:
-            db.delete_service_row(int(uid), config_name)
-        self.redirect(flash(f"/user/{uid}", "سرویس حذف شد."))
+        if not config_name:
+            return self.redirect(flash(f"/user/{uid}", "سرویس مشخص نشد.", "bad"))
+        ok, message = self.remove_service_everywhere(int(uid), config_name)
+        self.redirect(flash(f"/user/{uid}",
+                            (f"سرویس «{config_name}» از پنل 3x-ui و دیتابیس حذف شد." if ok
+                             else f"سرویس «{config_name}» حذف نشد: {message}"),
+                            "ok" if ok else "bad"))
+
+    def action_services_bulk_delete(self):
+        """حذف گروهی سرویس‌های تیک‌خورده در صفحهٔ سرویس‌ها"""
+        form = self.read_form_multi()
+        selected = [v for v in (form.get("sel") or []) if "||" in v]
+        if not selected:
+            return self.redirect(flash("/services", "هیچ سرویسی تیک نخورده بود.", "bad"))
+        done, failed, problems = 0, 0, []
+        for raw in selected:
+            uid_text, name = raw.split("||", 1)
+            try:
+                user_id = int(uid_text)
+            except ValueError:
+                continue
+            ok, message = self.remove_service_everywhere(user_id, name)
+            if ok:
+                done += 1
+            else:
+                failed += 1
+                problems.append(f"{name}: {message}")
+        summary = f"{done} سرویس از پنل 3x-ui و ربات حذف شد."
+        if failed:
+            summary += f" {failed} سرویس حذف نشد — " + "؛ ".join(problems[:3])
+        self.redirect(flash("/services", summary, "ok" if not failed else "bad"))
 
     def action_delete_transaction(self, tx_id):
         db.delete_transaction(tx_id)
@@ -1376,9 +1453,12 @@ class Handler(BaseHTTPRequestHandler):
                 if search and search not in hay:
                     continue
                 count += 1
+                name = str(s.get("config_name") or "")
+                token = html.escape(f"{uid}||{name}")
                 rows += (
-                    f'<tr><td><a href="/user/{uid}/service/{urllib.parse.quote(str(s.get("config_name")))}">'
-                    f'{html.escape(str(s.get("config_name")))}</a></td>'
+                    f'<tr><td><input type="checkbox" name="sel" value="{token}"></td>'
+                    f'<td><a href="/user/{uid}/service/{urllib.parse.quote(name)}">'
+                    f'{html.escape(name)}</a></td>'
                     f'<td><a href="/user/{uid}">{uid}</a></td>'
                     f'<td>{html.escape(str(s.get("internal_key") or ""))}</td>'
                     f'<td>{html.escape(str(s.get("server_key") or ""))}</td>'
@@ -1386,17 +1466,29 @@ class Handler(BaseHTTPRequestHandler):
                     f'<td class="muted small">{html.escape(str(s.get("purchase_date") or "")[:19].replace("T", " "))}</td></tr>'
                 )
         if not rows:
-            rows = "<tr><td colspan='6' class='muted'>سرویسی نیست.</td></tr>"
+            rows = "<tr><td colspan='7' class='muted'>سرویسی نیست.</td></tr>"
         body = f"""
+{self.flash_from_query(qs)}
 <h1>همهٔ سرویس‌ها ({count})</h1>
 <form class="row" method="get" action="/services">
   <input type="text" name="q" value="{html.escape(qs.get('q') or '')}" placeholder="نام کانفیگ، پلن، سرور یا شناسه کاربر">
   <button type="submit">جستجو</button>
   <a href="/services" class="muted small">حذف فیلتر</a>
 </form>
-<div class="tablewrap"><table>
-<tr><th>نام کانفیگ</th><th>کاربر</th><th>پلن</th><th>سرور</th><th>لینک اشتراک</th><th>تاریخ خرید</th></tr>
-{rows}</table></div>
+<form method="post" action="/services/delete"
+      onsubmit="return confirm('سرویس‌های تیک‌خورده از پنل 3x-ui و ربات حذف شوند؟')">
+  <div class="row">
+    <label class="small muted" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+      <input type="checkbox" onclick="for (const c of document.querySelectorAll('input[name=sel]')) c.checked = this.checked;">
+      انتخاب همه
+    </label>
+    <button type="submit" class="red">🗑 حذف انتخاب‌شده‌ها</button>
+    <span class="muted small">هر سرویس تیک‌خورده از پنل 3x-ui و از ربات حذف می‌شود و به کاربر در تلگرام اطلاع داده می‌شود.</span>
+  </div>
+  <div class="tablewrap"><table>
+  <tr><th></th><th>نام کانفیگ</th><th>کاربر</th><th>پلن</th><th>سرور</th><th>لینک اشتراک</th><th>تاریخ خرید</th></tr>
+  {rows}</table></div>
+</form>
 """
         render(self, "سرویس‌ها", body, active="/services")
 
