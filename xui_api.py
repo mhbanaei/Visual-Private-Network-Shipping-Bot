@@ -197,10 +197,20 @@ MISSING = "missing"
 UNREACHABLE = "unreachable"
 
 
+def all_inbounds(server_key: str):
+    """همهٔ اینباندهای پنل (برای بررسی یک کلاینت در کل پنل، نه فقط یک اینباند)"""
+    response = request(server_key, "GET", "/panel/api/inbounds/list")
+    data = payload(response)
+    if not data.get("success"):
+        return None
+    return data.get("obj") or []
+
+
 def client_state(server_key: str, email: str) -> str:
     """وضعیت کلاینت در پنل: exists / missing / unreachable
 
     «unreachable» یعنی پنل جواب نداد؛ در این حالت هرگز نباید چیزی از ربات حذف شود.
+    وجود کلاینت در همهٔ اینباندها بررسی می‌شود تا تغییر اینباند باعث حذف اشتباه نشود.
     """
     response = request(server_key, "GET", f"/panel/api/clients/get/{email}")
     if response is None:
@@ -208,18 +218,19 @@ def client_state(server_key: str, email: str) -> str:
     data = payload(response)
     if data.get("success") and isinstance(data.get("obj"), dict) and data["obj"].get("client"):
         return EXISTS
-    inbound = get_inbound(server_key)
-    if not inbound:
+    inbounds = all_inbounds(server_key)
+    if not inbounds:
         return UNREACHABLE
-    settings = inbound.get("settings") or {}
-    if isinstance(settings, str):
-        try:
-            settings = json.loads(settings)
-        except ValueError:
-            settings = {}
-    for client in settings.get("clients") or []:
-        if client.get("email") == email:
-            return EXISTS
+    for inbound in inbounds:
+        settings = inbound.get("settings") or {}
+        if isinstance(settings, str):
+            try:
+                settings = json.loads(settings)
+            except ValueError:
+                settings = {}
+        for client in settings.get("clients") or []:
+            if client.get("email") == email:
+                return EXISTS
     return MISSING
 
 

@@ -577,6 +577,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.action_login()
             if not self.require_auth():
                 return
+            if path == "/services/resync":
+                return self.action_resync_servers()
             if path == "/services/delete":
                 return self.action_services_bulk_delete()
             if path == "/users/add":
@@ -1193,13 +1195,17 @@ class Handler(BaseHTTPRequestHandler):
             current = xui_api.get_client(server_key, name)
             if current:
                 return self.redirect(flash(back, "اطلاعات سرویس از پنل 3x-ui تازه شد؛ تغییری برای ذخیره نبود."))
-            renamed = find_client_by_uuid(server_key, service.get("uuid"))
+            uuid_value = str(service.get("uuid") or "").strip()
+            renamed = find_client_by_uuid(server_key, uuid_value)
             if not renamed:
                 state = (xui_api.client_state(server_key, name)
                          if server_key in xui_api.server_keys() else xui_api.MISSING)
                 if state == xui_api.UNREACHABLE:
                     return self.redirect(flash(
                         back, "پنل 3x-ui پاسخ نداد؛ برای جلوگیری از حذف اشتباه، سرویس در ربات دست‌نخورده ماند.", "bad"))
+                if not uuid_value:
+                    return self.redirect(flash(
+                        back, "کلاینت در پنل 3x-ui نیست، ولی UUID این سرویس خالی است؛ برای جلوگیری از حذف اشتباه، چیزی پاک نشد.", "bad"))
                 db.delete_service_row(user_id, name)
                 self.notify_service_deleted(user_id, name)
                 return self.redirect(flash(
@@ -1424,6 +1430,60 @@ class Handler(BaseHTTPRequestHandler):
                              else f"سرویس «{config_name}» حذف نشد: {message}"),
                             "ok" if ok else "bad"))
 
+    def action_resync_servers(self):
+        """بازخوانی همهٔ سرویس‌ها از پنل 3x-ui و اعمال تغییرات دستی سرور در ربات"""
+        users = db.load_users()
+        renamed = deleted = same = unverified = 0
+        problems = {}
+        unreachable = set()
+        for uid_str, data in users.items():
+            try:
+                user_id = int(uid_str)
+            except (TypeError, ValueError):
+                continue
+            for service in list(data.get("services") or []):
+                name = str(service.get("config_name") or "")
+                if not name:
+                    continue
+                server_key = service.get("server_key") or "Server_1"
+                if server_key not in xui_api.server_keys():
+                    same += 1
+                    continue
+                if server_key in unreachable:
+                    continue
+                state = xui_api.client_state(server_key, name)
+                if state == xui_api.UNREACHABLE:
+                    unreachable.add(server_key)
+                    problems[xui_api.display_name(server_key)] = "پنل پاسخ نداد؛ سرویس‌های این سرور دست‌نخورده ماندند"
+                    continue
+                if state == xui_api.EXISTS:
+                    same += 1
+                    continue
+                uuid_value = str(service.get("uuid") or "").strip()
+                new_name = find_client_by_uuid(server_key, uuid_value)
+                if new_name and new_name != name:
+                    new_link = (xui_api.sub_link_for(new_name, service.get("sub_link") or "")
+                                or service.get("sub_link"))
+                    db.rename_service(user_id, name, new_name)
+                    if new_link:
+                        db.update_service_fields(user_id, new_name, sub_link=new_link)
+                    self.notify_service_change(user_id, new_name, new_link, server_key)
+                    renamed += 1
+                elif uuid_value:
+                    db.delete_service_row(user_id, name)
+                    self.notify_service_deleted(user_id, name)
+                    deleted += 1
+                else:
+                    # بدون UUID نمی‌توان مطمئن شد کلاینت همان است؛ حذف نمی‌کنیم و گزارش می‌دهیم
+                    unverified += 1
+        summary = (f"بازخوانی سرورها انجام شد — {renamed} تغییر نام، {deleted} حذف، "
+                   f"{same} بدون تغییر")
+        if unverified:
+            summary += f"، {unverified} سرویس بدون UUID قابل بررسی نبود و دست‌نخورده ماند"
+        for server_name, problem in problems.items():
+            summary += f" | {server_name}: {problem}"
+        self.redirect(flash("/services", summary, "bad" if problems else "ok"))
+
     def action_services_bulk_delete(self):
         """حذف گروهی سرویس‌های تیک‌خورده در صفحهٔ سرویس‌ها"""
         form = self.read_form_multi()
@@ -1635,6 +1695,11 @@ class Handler(BaseHTTPRequestHandler):
   <input type="text" name="q" value="{html.escape(qs.get('q') or '')}" placeholder="نام کانفیگ، پلن، سرور یا شناسه کاربر" style="min-width:280px">
   <button type="submit" class="grey">جستجو</button>
   <a href="/services" class="muted small">حذف فیلتر</a>
+</form>
+<form class="row" method="post" action="/services/resync"
+      onsubmit="return confirm('همهٔ سرویس‌ها با پنل 3x-ui مقایسه شوند؟ تغییر نام‌ها و حذف‌ها در ربات ذخیره و به کاربران اطلاع داده می‌شود.')">
+  <button type="submit">🔄 بازخوانی سرورها</button>
+  <span class="muted small">تغییراتی که مستقیم از داخل 3x-ui اعمال شده را می‌خواند: تغییر نام (با UUID)، حذف کلاینت‌ها و به‌روزرسانی لینک اشتراک؛ سپس به کاربر تلگرام اطلاع می‌دهد.</span>
 </form>
 <form id="svcform" method="post" action="/services/delete"
       onsubmit="return confirm('سرویس‌های تیک‌خورده از پنل 3x-ui و ربات حذف شوند؟')">
