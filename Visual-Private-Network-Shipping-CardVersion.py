@@ -3251,23 +3251,16 @@ async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         parse_mode="Markdown",
     )
 
-async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """نمایش لینک رفرال کاربر"""
-    user_id = update.effective_user.id
-    
-    # ساخت لینک رفرال
-    bot_username = (await context.bot.get_me()).username
+def build_referral_page(user_id: int, bot_username: str) -> tuple[str, InlineKeyboardMarkup]:
+    """متن و دکمه‌های صفحهٔ لینک رفرال (مشترک بین پیام معمولی و callback)"""
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-    
+
     # دریافت اطلاعات رفرال
     referral_info = get_user_referral_info(user_id)
     referral_by = referral_info.get("referral_by")
     referral_earnings = referral_info.get("referral_earnings", 0.0)
     referrals_count = referral_info.get("referrals_count", 0)
-    
-    # دریافت لیست کاربران رفرال شده
-    referral_history = get_referral_history(user_id)
-    
+
     message_text = (
         f"**🔗 لینک رفرال شما**\n\n"
         f"لینک اختصاصی شما:\n`{ref_link}`\n\n"
@@ -3276,11 +3269,11 @@ async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"🔸 مجموع درآمد رفرال: **{referral_earnings:,.0f}** تومان\n"
         f"🔸 درصد رفرال: **{user_referral_percent(user_id):g}%**\n"
     )
-    
+
     # نمایش رفرال دهنده (اگر دارد)
     if referral_by:
         message_text += f"🔸 رفرال دهنده شما: {format_user_info(referral_by, show_copyable=False)}\n"
-    
+
     message_text += "\n**📝 نحوه کار:**\n"
     message_text += "1. لینک بالا را برای دوستان خود ارسال کنید\n"
     message_text += "2. دوستان شما با کلیک روی لینک وارد ربات می‌شوند\n"
@@ -3296,31 +3289,36 @@ async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                          f"({bonus_info['available'] * REFERRAL_BONUS_GB} گیگ) — از دکمهٔ زیر دریافت کنید.\n")
     else:
         message_text += f"تا هدیهٔ بعدی: **{bonus_info['to_next']}** نفر.\n"
-    
+
     message_text += "\n**⚠️ توجه:**\n"
     message_text += f"• رفرال هر کاربر فقط یک بار و در اولین ورود ثبت می‌شود\n"
     message_text += f"• مبلغ شارژ باید حداقل **{REFERRAL_MIN_AMOUNT:,}** تومان باشد تا رفرال محاسبه شود\n"
     message_text += f"• رفرال پس از تأیید رسید شارژ توسط ادمین به حساب شما واریز می‌شود"
-    
+
     message_text += "\n\n**‼️ نکته:**\n"
     message_text += f"• در صورتی که مبلغ درآمد شما از رفرال بیش از 500,000 تومان شود\n"
     message_text += f"• میتوانید با ثبت درخواست در پشتیبانی مبلغ درآمد خود را به کارت بانکی خود واریز کنید\n"
-    
-    # دکمهٔ دریافت هدیهٔ حجمی رفرال (فقط اگر هدیهٔ آماده وجود داشته باشد)
-    bonus_rows = []
+
+    # دکمه‌ها: دریافت هدیه (در صورت وجود)، اشتراک‌گذاری و تاریخچه
+    keyboard = []
     if bonus_info['available'] > 0:
-        bonus_rows.append([InlineKeyboardButton(
+        keyboard.append([InlineKeyboardButton(
             f"🎁 دریافت هدیهٔ حجمی ({REFERRAL_BONUS_GB} گیگ)",
             callback_data="REFERRAL_BONUS_CLAIM")])
+    keyboard.append([InlineKeyboardButton(
+        "📲 اشتراک‌گذاری لینک", url=f"tg://msg_url?url={ref_link}&text=لینک%20رفرال%20من")])
+    keyboard.append([InlineKeyboardButton(
+        "📊 تاریخچه درآمد رفرال", callback_data=f"REFERRAL_HISTORY_{user_id}")])
 
-    # ایجاد دکمه‌های اشتراک‌گذاری
-    keyboard = [
-        *bonus_rows,
-        [InlineKeyboardButton("📲 اشتراک‌گذاری لینک", url=f"tg://msg_url?url={ref_link}&text=لینک%20رفرال%20من")],
-        [InlineKeyboardButton("📊 تاریخچه درآمد رفرال", callback_data=f"REFERRAL_HISTORY_{user_id}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
+    return message_text, InlineKeyboardMarkup(keyboard)
+
+
+async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش لینک رفرال کاربر"""
+    user_id = update.effective_user.id
+    bot_username = (await context.bot.get_me()).username
+    message_text, reply_markup = build_referral_page(user_id, bot_username)
+
     await update.message.reply_text(
         message_text,
         parse_mode="Markdown",
@@ -5747,20 +5745,12 @@ async def back_to_referral_link(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer("بازگشت...")
     user_id = query.from_user.id
     
-    # Update در callback اجازهٔ تغییر message را نمی‌دهد؛ پیام قبلی را پاک و صفحه را دوباره می‌فرستیم
+    bot_username = (await context.bot.get_me()).username
+    message_text, reply_markup = build_referral_page(user_id, bot_username)
     try:
-        await query.message.delete()
+        await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
     except Exception:
-        pass
-
-    class _ReplyShim:
-        async def reply_text(self, *args, **kwargs):
-            return await query.message.reply_text(*args, **kwargs)
-
-    shim = type("_ShimUpdate", (), {})()
-    shim.effective_user = query.from_user
-    shim.message = _ReplyShim()
-    await my_referral(shim, context)
+        await context.bot.send_message(user_id, message_text, parse_mode="Markdown", reply_markup=reply_markup)
 
 async def back_to_main_from_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """بازگشت به منوی اصلی از بخش آموزش"""
