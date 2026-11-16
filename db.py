@@ -607,6 +607,22 @@ def touch_profile(user_id: int, username=None, first_name=None) -> None:
         conn.close()
 
 
+def delete_transactions(tx_ids) -> int:
+    """حذف چند تراکنش با هم؛ تعداد حذف‌شده‌ها را برمی‌گرداند"""
+    ids = [str(x) for x in (tx_ids or []) if str(x).strip()]
+    if not ids:
+        return 0
+    init()
+    conn = connect()
+    try:
+        with conn:
+            placeholders = ",".join("?" for _ in ids)
+            cur = conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", ids)
+            return cur.rowcount
+    finally:
+        conn.close()
+
+
 def delete_transaction(tx_id: str) -> bool:
     init()
     conn = connect()

@@ -234,98 +234,232 @@ PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{theme_init}
 <title>{title} · پنل مدیریت</title>
 <style>
-  :root {{ color-scheme: dark; --bg:#0b1120; --panel:#111c33; --line:#1e293b; --muted:#94a3b8; --text:#e2e8f0; }}
+  :root {{ color-scheme: light; --bg:#f9f9f9; --surface:#ffffff; --line:#e5e5e5; --muted:#606060;
+          --text:#0f0f0f; --accent:#cc0000; --blue:#065fd4; --hover:#f2f2f2;
+          --input:#ffffff; --border:#cccccc; --rowhover:#fafafa; --active-bg:#e5e5e5;
+          --chip-active-bg:#0f0f0f; --chip-active-text:#ffffff; --brand:#ff0000;
+          --pill-pending-bg:#fff4e5; --pill-pending-fg:#a15c00;
+          --pill-ok-bg:#e6f4ea; --pill-ok-fg:#137333;
+          --pill-bad-bg:#fce8e6; --pill-bad-fg:#c5221f;
+          --bulkbar-bg:#0f0f0f; --bulkbar-fg:#ffffff; }}
+  :root[data-theme="dark"] {{
+    color-scheme: dark; --bg:#0f0f0f; --surface:#181818; --line:#303030; --muted:#aaaaaa;
+    --text:#f1f1f1; --accent:#ff4d4d; --blue:#3ea6ff; --hover:#272727;
+    --input:#121212; --border:#3f3f3f; --rowhover:#202020; --active-bg:#303030;
+    --chip-active-bg:#f1f1f1; --chip-active-text:#0f0f0f; --brand:#ff0000;
+    --pill-pending-bg:#3a2a10; --pill-pending-fg:#ffb74d;
+    --pill-ok-bg:#12351f; --pill-ok-fg:#6ee7a8;
+    --pill-bad-bg:#3a1414; --pill-bad-fg:#ff9a9a;
+    --bulkbar-bg:#323232; --bulkbar-fg:#f1f1f1;
+  }}
+  @media (prefers-color-scheme: dark) {{
+    :root:not([data-theme="light"]) {{
+      color-scheme: dark; --bg:#0f0f0f; --surface:#181818; --line:#303030; --muted:#aaaaaa;
+      --text:#f1f1f1; --accent:#ff4d4d; --blue:#3ea6ff; --hover:#272727;
+      --input:#121212; --border:#3f3f3f; --rowhover:#202020; --active-bg:#303030;
+      --chip-active-bg:#f1f1f1; --chip-active-text:#0f0f0f; --brand:#ff0000;
+      --pill-pending-bg:#3a2a10; --pill-pending-fg:#ffb74d;
+      --pill-ok-bg:#12351f; --pill-ok-fg:#6ee7a8;
+      --pill-bad-bg:#3a1414; --pill-bad-fg:#ff9a9a;
+      --bulkbar-bg:#323232; --bulkbar-fg:#f1f1f1;
+    }}
+  }}
   * {{ box-sizing:border-box; }}
-  body {{ margin:0; font-family:Tahoma,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); font-size:14px; }}
-  a {{ color:#7dd3fc; text-decoration:none; }}
+  body {{ margin:0; font-family:Tahoma,"Segoe UI",sans-serif; background:var(--bg); color:var(--text);
+         font-size:14px; display:flex; min-height:100vh; }}
+  a {{ color:var(--blue); text-decoration:none; }}
   a:hover {{ text-decoration:underline; }}
-  header {{ position:sticky; top:0; z-index:10; background:#0f172aee; backdrop-filter:blur(6px);
-           border-bottom:1px solid var(--line); padding:10px 16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }}
-  header .brand {{ font-weight:bold; font-size:16px; color:#f8fafc; white-space:nowrap; }}
-  header nav {{ display:flex; gap:4px; flex-wrap:wrap; }}
-  header nav a {{ padding:7px 11px; border-radius:9px; color:#cbd5e1; }}
-  header nav a:hover, header nav a.active {{ background:#1e293b; text-decoration:none; color:#f8fafc; }}
-  main {{ max-width:1200px; margin:0 auto; padding:18px 14px 60px; }}
-  h1 {{ font-size:19px; margin:0 0 14px; }}
-  h2 {{ font-size:15px; margin:26px 0 10px; color:#cbd5e1; border-right:3px solid #2563eb; padding-right:8px; }}
-  .cards {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }}
-  .card {{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px; }}
-  .card .k {{ color:var(--muted); font-size:11.5px; margin-bottom:6px; }}
-  .card .v {{ font-size:18px; font-weight:bold; word-break:break-word; }}
-  .tablewrap {{ overflow-x:auto; border-radius:12px; border:1px solid var(--line); }}
-  table {{ width:100%; border-collapse:collapse; background:var(--panel); min-width:520px; }}
-  th, td {{ padding:9px 10px; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; }}
-  th {{ background:#16213c; color:var(--muted); font-weight:normal; font-size:12.5px; position:sticky; top:0; }}
+  .sidebar {{ width:232px; flex:0 0 232px; background:var(--surface); border-left:1px solid var(--line);
+             position:sticky; top:0; height:100vh; padding:12px 8px; display:flex; flex-direction:column; }}
+  .sidebar .brand {{ display:flex; align-items:center; gap:9px; padding:8px 10px 16px;
+                    font-weight:bold; font-size:15px; }}
+  .sidebar .brand .mark {{ width:24px; height:17px; border-radius:4px; background:var(--brand); display:inline-block; }}
+  .sidebar nav {{ display:flex; flex-direction:column; gap:2px; }}
+  .navitem {{ display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:10px;
+             color:var(--text); font-size:13.5px; white-space:nowrap; }}
+  .navitem:hover {{ background:var(--hover); text-decoration:none; }}
+  .navitem.active {{ background:var(--active-bg); font-weight:bold; }}
+  .sidebar .logout {{ margin-top:auto; }}
+  .shell {{ flex:1; min-width:0; display:flex; flex-direction:column; }}
+  .topbar {{ position:sticky; top:0; z-index:20; height:56px; background:var(--surface);
+            border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; padding:0 20px; }}
+  .searchbar {{ display:flex; gap:8px; align-items:center; flex:1; max-width:470px; }}
+  .searchbar input {{ flex:1; border:1px solid var(--border); border-radius:999px; background:var(--input);
+                     color:var(--text); padding:8px 14px; }}
+  .themebtn {{ background:var(--hover); color:var(--text); border:none; border-radius:50%;
+              width:34px; height:34px; font-size:15px; line-height:1; cursor:pointer; padding:0; }}
+  .searchbar button {{ background:var(--hover); color:var(--text); border-radius:999px; }}
+  .avatar {{ width:34px; height:34px; border-radius:50%; background:var(--blue); color:#fff;
+            display:flex; align-items:center; justify-content:center; font-size:13px; margin-inline-start:auto; }}
+  .avatar:hover {{ text-decoration:none; }}
+  main {{ width:100%; max-width:1320px; margin:0 auto; padding:20px 22px 90px; }}
+  h1 {{ font-size:20px; margin:0 0 12px; font-weight:600; }}
+  h2 {{ font-size:15px; margin:26px 0 10px; font-weight:600; }}
+  .count-badge {{ margin-inline-start:8px; font-size:12px; color:var(--muted); font-weight:normal; }}
+  .cards {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }}
+  .card {{ background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }}
+  .card .k {{ color:var(--muted); font-size:12px; margin-bottom:6px; }}
+  .card .v {{ font-size:20px; font-weight:bold; word-break:break-word; }}
+  .tablewrap {{ overflow-x:auto; border-radius:12px; border:1px solid var(--line); background:var(--surface); }}
+  table {{ width:100%; border-collapse:collapse; background:var(--surface); min-width:520px; }}
+  th, td {{ padding:11px 12px; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; }}
+  th {{ color:var(--muted); font-weight:normal; font-size:12.5px; position:sticky; top:0; background:var(--surface); }}
   tr:last-child td {{ border-bottom:none; }}
-  tr:hover td {{ background:#14203a; }}
+  tr:hover td {{ background:var(--rowhover); }}
   td.wrap {{ white-space:normal; word-break:break-all; min-width:180px; }}
+  .checkcol {{ width:40px; }}
+  input[type=checkbox] {{ width:16px; height:16px; accent-color:var(--accent); cursor:pointer; }}
   .muted {{ color:var(--muted); }}
   .small {{ font-size:12px; }}
-  .pill {{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:11.5px; }}
-  .pending {{ background:#7c2d12; color:#fed7aa; }}
-  .approved, .ok {{ background:#14532d; color:#bbf7d0; }}
-  .rejected, .bad {{ background:#7f1d1d; color:#fecaca; }}
+  .pill {{ display:inline-block; padding:2px 8px; border-radius:4px; font-size:11.5px; }}
+  .pending {{ background:var(--pill-pending-bg); color:var(--pill-pending-fg); }}
+  .approved, .ok {{ background:var(--pill-ok-bg); color:var(--pill-ok-fg); }}
+  .rejected, .bad {{ background:var(--pill-bad-bg); color:var(--pill-bad-fg); }}
   form.inline {{ display:inline; }}
   input, button, textarea, select {{ font-family:inherit; font-size:13px; }}
   input[type=text], input[type=password], input[type=number], select, textarea {{
-      background:#0b1220; border:1px solid var(--line); color:var(--text);
-      border-radius:9px; padding:7px 9px; max-width:100%; }}
-  input:focus, textarea:focus, select:focus {{ outline:1px solid #2563eb; }}
-  button {{ background:#2563eb; color:#fff; border:none; border-radius:9px; padding:7px 12px; cursor:pointer; }}
-  button:hover {{ filter:brightness(1.1); }}
-  button.grey {{ background:#334155; }}
-  button.red {{ background:#b91c1c; }}
-  button.mini {{ padding:4px 8px; font-size:11.5px; border-radius:7px; }}
-  a.btn {{ display:inline-block; background:#2563eb; color:#fff; border-radius:9px; padding:7px 12px; font-size:13px; }}
-  a.btn.grey {{ background:#334155; }}
+      background:var(--input); border:1px solid var(--border); color:var(--text);
+      border-radius:8px; padding:8px 10px; max-width:100%; }}
+  input:focus, textarea:focus, select:focus {{ outline:2px solid var(--blue); outline-offset:-1px; }}
+  button {{ background:var(--blue); color:#fff; border:none; border-radius:18px; padding:8px 14px; cursor:pointer; }}
+  button:hover {{ filter:brightness(1.08); }}
+  button.grey {{ background:var(--hover); color:var(--text); }}
+  button.red {{ background:var(--accent); }}
+  button.mini {{ padding:5px 10px; font-size:11.5px; border-radius:8px; }}
+  a.btn {{ display:inline-block; background:var(--blue); color:#fff; border-radius:18px; padding:8px 14px; font-size:13px; }}
+  a.btn:hover {{ text-decoration:none; filter:brightness(1.08); }}
+  a.btn.grey {{ background:var(--hover); color:var(--text); }}
   .row {{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }}
+  .chips {{ display:flex; gap:8px; overflow-x:auto; padding:2px 0 12px; }}
+  .chip {{ background:var(--hover); color:var(--text); border-radius:8px; padding:6px 12px;
+          font-size:12.5px; white-space:nowrap; }}
+  .chip:hover {{ text-decoration:none; background:var(--active-bg); }}
+  .chip.active {{ background:var(--chip-active-bg); color:var(--chip-active-text); }}
+  .bulkbar {{ display:none; position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+             background:var(--bulkbar-bg); color:var(--bulkbar-fg); border-radius:12px; padding:10px 16px; gap:12px;
+             align-items:center; box-shadow:0 8px 24px rgba(0,0,0,.28); z-index:60; }}
+  .bulkbar.show {{ display:flex; }}
+  .bulkbar button.red {{ background:var(--accent); }}
+  .empty {{ padding:38px 12px; text-align:center; color:var(--muted); }}
   .grid2 {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; }}
-  .box {{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; }}
-  .box h3 {{ margin:0 0 10px; font-size:13.5px; color:#cbd5e1; font-weight:normal; }}
-  .login {{ max-width:360px; margin:10vh auto; }}
+  .box {{ background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:16px; }}
+  .box h3 {{ margin:0 0 10px; font-size:13.5px; color:var(--text); font-weight:600; }}
+  .login {{ max-width:360px; margin:10vh auto; background:var(--surface); border:1px solid var(--line);
+           border-radius:12px; padding:22px; }}
   .login input {{ width:100%; margin-bottom:10px; }}
-  .err {{ color:#fca5a5; margin-bottom:8px; }}
-  .notice {{ border-radius:10px; padding:10px 12px; margin-bottom:14px; font-size:13px; }}
-  .notice.ok {{ background:#14532d; color:#bbf7d0; }}
-  .notice.bad {{ background:#7f1d1d; color:#fecaca; }}
-  details summary {{ cursor:pointer; color:#7dd3fc; font-size:12.5px; }}
-  .tag {{ background:#1e293b; color:#cbd5e1; border-radius:6px; padding:1px 6px; font-size:11.5px; }}
-  @media (max-width:640px) {{
-    main {{ padding:12px 9px 60px; }}
-    header {{ padding:9px 10px; gap:8px; }}
-    header nav a {{ padding:6px 9px; font-size:12.5px; }}
+  .err {{ color:var(--pill-bad-fg); margin-bottom:8px; }}
+  .notice {{ border-radius:8px; padding:10px 12px; margin-bottom:14px; font-size:13px; }}
+  .notice.ok {{ background:var(--pill-ok-bg); color:var(--pill-ok-fg); }}
+  .notice.bad {{ background:var(--pill-bad-bg); color:var(--pill-bad-fg); }}
+  details summary {{ cursor:pointer; color:var(--blue); font-size:12.5px; }}
+  .tag {{ background:var(--hover); color:var(--muted); border-radius:4px; padding:1px 6px; font-size:11.5px; }}
+  @media (max-width:820px) {{
+    body {{ display:block; }}
+    .sidebar {{ width:auto; flex:none; height:auto; flex-direction:row; align-items:center; overflow-x:auto;
+                border-left:none; border-bottom:1px solid var(--line); padding:6px 8px;
+                position:sticky; top:0; z-index:40; }}
+    .sidebar .brand, .sidebar .logout {{ display:none; }}
+    .sidebar nav {{ flex-direction:row; }}
+    .navitem {{ font-size:12.5px; padding:7px 10px; }}
+    .topbar {{ padding:0 12px; height:52px; }}
+    main {{ padding:14px 12px 80px; }}
     h1 {{ font-size:17px; }}
-    .card .v {{ font-size:16px; }}
-    table {{ min-width:460px; }}
+    table {{ min-width:480px; }}
   }}
 </style>
 </head>
 <body>
-{header}
+{sidebar}
+<div class="shell">
+{topbar}
 <main>{body}</main>
+</div>
 </body>
 </html>
 """
 
+PANEL_THEME_INIT = """<script>
+try {
+  var savedTheme = localStorage.getItem('panel-theme');
+  if (savedTheme) { document.documentElement.setAttribute('data-theme', savedTheme); }
+} catch (e) {}
+</script>"""
+
+PANEL_JS = """<script>
+(function () {
+  var all = document.getElementById('selall');
+  function boxes() { return Array.prototype.slice.call(document.querySelectorAll('input[name="sel"]')); }
+  function sync() {
+    var list = boxes(), n = list.filter(function (b) { return b.checked; }).length;
+    if (all) { all.checked = n > 0 && n === list.length; all.indeterminate = n > 0 && n < list.length; }
+    var bar = document.getElementById('bulkbar');
+    if (bar) { bar.classList.toggle('show', n > 0); }
+    var cnt = document.getElementById('selcount');
+    if (cnt) { cnt.textContent = n + ' مورد انتخاب شده'; }
+    var btn = document.getElementById('bulkdelete');
+    if (btn) { btn.disabled = n === 0; }
+  }
+  if (all) { all.addEventListener('change', function () { boxes().forEach(function (b) { b.checked = all.checked; }); sync(); }); }
+  document.addEventListener('change', function (e) { if (e.target && e.target.name === 'sel') { sync(); } });
+  document.addEventListener('click', function (e) {
+    if (e.target && e.target.id === 'clearsel') {
+      boxes().forEach(function (b) { b.checked = false; }); sync();
+    }
+  });
+  sync();
+
+  var themeBtn = document.getElementById('themetoggle');
+  function isDark() {
+    var attr = document.documentElement.getAttribute('data-theme');
+    if (attr) { return attr === 'dark'; }
+    return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  }
+  function paintThemeBtn() { if (themeBtn) { themeBtn.textContent = isDark() ? '☀️' : '🌙'; } }
+  if (themeBtn) {
+    themeBtn.addEventListener('click', function () {
+      var next = isDark() ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      try { localStorage.setItem('panel-theme', next); } catch (e) {}
+      paintThemeBtn();
+    });
+  }
+  paintThemeBtn();
+})();
+</script>"""
+
 
 def render(handler, title, body, active=""):
     items = [
-        ("/", "داشبورد"),
-        ("/users", "کاربران"),
-        ("/services", "سرویس‌ها"),
-        ("/receipts", "رسیدها"),
-        ("/transactions", "تراکنش‌ها"),
-        ("/announce", "اعلان"),
+        ("/", "داشبورد", "🏠"),
+        ("/users", "کاربران", "👥"),
+        ("/services", "سرویس‌ها", "🧩"),
+        ("/receipts", "رسیدها", "🧾"),
+        ("/transactions", "تراکنش‌ها", "💳"),
+        ("/announce", "اعلان", "📢"),
     ]
     nav = "".join(
-        f'<a href="{href}"{" class=\"active\"" if href == active else ""}>{label}</a>'
-        for href, label in items
+        f'<a class="navitem{" active" if href == active else ""}" href="{href}">'
+        f'<span>{icon}</span><span>{label}</span></a>'
+        for href, label, icon in items
     )
-    header = (f'<header><span class="brand">🛠 پنل مدیریت</span><nav>{nav}</nav>'
-              f'<span style="margin-right:auto"><a href="/logout">خروج</a></span></header>')
-    handler.send_html(PAGE.format(title=html.escape(title), header=header, body=body))
+    sidebar = (f'<aside class="sidebar"><div class="brand"><span class="mark"></span>'
+               f'<span>پنل مدیریت</span></div><nav>{nav}'
+               f'<a class="navitem logout" href="/logout"><span>🚪</span><span>خروج</span></a>'
+               f'</nav></aside>')
+    initial = html.escape((BOT_USERNAME or "admin")[:1].upper())
+    topbar = (f'<header class="topbar">'
+              f'<form class="searchbar" method="get" action="/users">'
+              f'<input type="text" name="q" placeholder="جستجوی کاربر (شناسه، نام یا یوزرنیم)">'
+              f'<button type="submit">جستجو</button></form>'
+              f'<button type="button" id="themetoggle" class="themebtn" '
+              f'title="تغییر تم روشن/تیره">🌙</button>'
+              f'<a class="avatar" href="/" title="پنل مدیریت">{initial}</a>'
+              f'</header>')
+    handler.send_html(PAGE.format(title=html.escape(title), sidebar=sidebar, topbar=topbar,
+                                  body=body, theme_init=PANEL_THEME_INIT) + PANEL_JS)
 
 
 class PanelServer(ThreadingHTTPServer):
@@ -432,7 +566,8 @@ class Handler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass
         except Exception as exc:
-            self.send_html(PAGE.format(title="خطا", header="", body=f"<h1>خطا</h1><pre>{html.escape(str(exc))}</pre>"), 500)
+            self.send_html(PAGE.format(title="خطا", sidebar="", topbar="", theme_init="",
+                                       body=f"<h1>خطا</h1><pre>{html.escape(str(exc))}</pre>"), 500)
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -454,6 +589,8 @@ class Handler(BaseHTTPRequestHandler):
                 parts = path.split("/")
                 if parts[3] in ("approve", "reject"):
                     return self.action_receipt(parts[2], parts[3])
+            if path == "/transactions/bulk-delete":
+                return self.action_transactions_bulk_delete()
             if path.startswith("/transactions/") and path.endswith("/delete"):
                 return self.action_delete_transaction(path.split("/")[2])
             if path.startswith("/user/"):
@@ -483,11 +620,11 @@ class Handler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass
         except Exception as exc:
-            self.send_html(PAGE.format(title="خطا", header="",
+            self.send_html(PAGE.format(title="خطا", sidebar="", topbar="", theme_init="",
                                        body=f"<h1>خطا</h1><pre>{html.escape(str(exc))}</pre>"), 500)
 
     def not_found(self):
-        self.send_html(PAGE.format(title="پیدا نشد", header="",
+        self.send_html(PAGE.format(title="پیدا نشد", sidebar="", topbar="", theme_init="",
                                    body="<h1>صفحه پیدا نشد</h1><p><a href='/'>بازگشت به داشبورد</a></p>"), 404)
 
     # ---------- auth ----------
@@ -500,7 +637,7 @@ class Handler(BaseHTTPRequestHandler):
   <p class="muted small">برای باز کردن: در فایل <b>admin_panel.py</b> مقدار
   <code>PANEL_LOCK = "1"</code> را به <code>PANEL_LOCK = "0"</code> تغییر بده و ربات/پنل را دوباره اجرا کن.</p>
 </div></div>"""
-            return self.send_html(PAGE.format(title="قفل", header="", body=body))
+            return self.send_html(PAGE.format(title="قفل", sidebar="", topbar="", theme_init="", body=body))
         body = f"""
 <div class="login"><div class="box">
   <h2 style="margin-top:0;border:none;padding:0">ورود به پنل</h2>
@@ -510,7 +647,8 @@ class Handler(BaseHTTPRequestHandler):
     <button type="submit" style="width:100%">ورود</button>
   </form>
 </div></div>"""
-        self.send_html(PAGE.format(title="ورود", header="", body=body))
+        self.send_html(PAGE.format(title="ورود", sidebar="", topbar="",
+                                   theme_init=PANEL_THEME_INIT, body=body))
 
     def action_login(self):
         global _login_failures
@@ -1347,18 +1485,15 @@ class Handler(BaseHTTPRequestHandler):
             )
         if not rows:
             rows = "<tr><td colspan='7' class='muted'>رسیدی با این وضعیت نیست.</td></tr>"
+        chips = "".join(
+            f'<a class="chip{" active" if status_filter == key else ""}" href="/receipts?status={key}">{label}</a>'
+            for key, label in [("all", "همه"), ("pending", "در انتظار"),
+                               ("approved", "تأییدشده"), ("rejected", "رد‌شده")]
+        )
         body = f"""
 {self.flash_from_query(qs)}
 <h1>رسیدهای کارت به کارت</h1>
-<form class="row" method="get" action="/receipts">
-  <select name="status">
-    <option value="all"{' selected' if status_filter == 'all' else ''}>همه</option>
-    <option value="pending"{' selected' if status_filter == 'pending' else ''}>در انتظار</option>
-    <option value="approved"{' selected' if status_filter == 'approved' else ''}>تأییدشده</option>
-    <option value="rejected"{' selected' if status_filter == 'rejected' else ''}>رد‌شده</option>
-  </select>
-  <button type="submit">فیلتر</button>
-</form>
+<div class="chips">{chips}</div>
 <div class="tablewrap"><table>
 <tr><th>شناسه</th><th>کاربر</th><th>مبلغ</th><th>وضعیت</th><th>زمان</th><th>پردازش‌کننده</th><th>عملیات</th></tr>
 {rows}</table></div>
@@ -1412,34 +1547,59 @@ class Handler(BaseHTTPRequestHandler):
                 if search not in hay:
                     continue
             count += 1
+            tx_id = str(tx.get("id"))
             rows += (
-                f'<tr><td><a href="/user/{tx["user_id"]}">{tx["user_id"]}</a></td>'
+                f'<tr><td><input type="checkbox" name="sel" value="{html.escape(tx_id)}"></td>'
+                f'<td><a href="/user/{tx["user_id"]}">{tx["user_id"]}</a></td>'
                 f'<td>{html.escape(TX_LABELS.get(tx["type"], tx["type"] or ""))}</td>'
                 f'<td>{money(tx["amount"])}</td>'
                 f'<td class="wrap">{html.escape(tx["description"] or "")}</td>'
                 f'<td class="muted small">{html.escape((tx["timestamp"] or "")[:19].replace("T", " "))}</td>'
-                f'<td><form class="inline" method="post" action="/transactions/{html.escape(str(tx["id"]))}/delete" '
-                f'onsubmit="return confirm(\'حذف شود؟\')"><button class="red mini">حذف</button></form></td></tr>'
+                f'<td><form class="inline" method="post" action="/transactions/{html.escape(tx_id)}/delete" '
+                f'onsubmit="return confirm(\'این تراکنش حذف شود؟\')"><button class="red mini">حذف</button></form></td></tr>'
             )
         if not rows:
-            rows = "<tr><td colspan='6' class='muted'>تراکنشی نیست.</td></tr>"
-        options = "".join(
-            f'<option value="{key}"{" selected" if tx_type == key else ""}>{label}</option>'
+            rows = ("<tr><td colspan='7'><div class='empty'>"
+                    "تراکنشی با این فیلتر نیست.</div></td></tr>")
+        q_text = qs.get("q") or ""
+        suffix = f"&q={urllib.parse.quote(q_text)}" if q_text else ""
+        chips = "".join(
+            f'<a class="chip{" active" if tx_type == key else ""}" href="/transactions?type={key}{suffix}">{label}</a>'
             for key, label in [("all", "همه")] + list(TX_LABELS.items())
         )
         body = f"""
 {self.flash_from_query(qs)}
-<h1>تراکنش‌ها ({count})</h1>
+<h1>تراکنش‌ها<span class="count-badge">{count} مورد</span></h1>
+<div class="chips">{chips}</div>
 <form class="row" method="get" action="/transactions">
-  <select name="type">{options}</select>
-  <input type="text" name="q" value="{html.escape(qs.get('q') or '')}" placeholder="جستجو در توضیح، مبلغ یا شناسه کاربر">
-  <button type="submit">فیلتر</button>
-  <a href="/transactions" class="muted small">حذف فیلتر</a>
+  <input type="hidden" name="type" value="{html.escape(tx_type)}">
+  <input type="text" name="q" value="{html.escape(q_text)}" placeholder="جستجو در توضیح، مبلغ یا شناسه کاربر" style="min-width:280px">
+  <button type="submit" class="grey">جستجو</button>
+  <a href="/transactions" class="muted small">حذف فیلترها</a>
 </form>
-<div class="tablewrap"><table>
-<tr><th>کاربر</th><th>نوع</th><th>مبلغ</th><th>توضیح</th><th>زمان</th><th></th></tr>{rows}</table></div>
+<form id="txform" method="post" action="/transactions/bulk-delete"
+      onsubmit="return confirm('تراکنش‌های تیک‌خورده حذف شوند؟')">
+  <div class="tablewrap"><table>
+  <tr><th class="checkcol"><input type="checkbox" id="selall" title="انتخاب همه"></th>
+      <th>کاربر</th><th>نوع</th><th>مبلغ</th><th>توضیح</th><th>زمان</th><th></th></tr>
+  {rows}</table></div>
+  <div class="bulkbar" id="bulkbar">
+    <span id="selcount">۰ مورد انتخاب شده</span>
+    <button type="submit" id="bulkdelete" class="red mini" disabled>🗑 حذف انتخاب‌شده‌ها</button>
+    <button type="button" id="clearsel" class="grey mini">لغو انتخاب</button>
+  </div>
+</form>
 """
         render(self, "تراکنش‌ها", body, active="/transactions")
+
+    def action_transactions_bulk_delete(self):
+        """حذف گروهی تراکنش‌های تیک‌خورده"""
+        form = self.read_form_multi()
+        ids = [v for v in (form.get("sel") or []) if v.strip()]
+        deleted = db.delete_transactions(ids)
+        if deleted:
+            return self.redirect(flash("/transactions", f"{deleted} تراکنش حذف شد."))
+        self.redirect(flash("/transactions", "هیچ تراکنشی حذف نشد.", "bad"))
 
     def page_services(self, qs):
         search = (qs.get("q") or "").strip().lower()
@@ -1466,29 +1626,29 @@ class Handler(BaseHTTPRequestHandler):
                     f'<td class="muted small">{html.escape(str(s.get("purchase_date") or "")[:19].replace("T", " "))}</td></tr>'
                 )
         if not rows:
-            rows = "<tr><td colspan='7' class='muted'>سرویسی نیست.</td></tr>"
+            rows = ("<tr><td colspan='7'><div class='empty'>"
+                    "سرویسی با این فیلتر نیست.</div></td></tr>")
         body = f"""
 {self.flash_from_query(qs)}
-<h1>همهٔ سرویس‌ها ({count})</h1>
+<h1>همهٔ سرویس‌ها<span class="count-badge">{count} مورد</span></h1>
 <form class="row" method="get" action="/services">
-  <input type="text" name="q" value="{html.escape(qs.get('q') or '')}" placeholder="نام کانفیگ، پلن، سرور یا شناسه کاربر">
-  <button type="submit">جستجو</button>
+  <input type="text" name="q" value="{html.escape(qs.get('q') or '')}" placeholder="نام کانفیگ، پلن، سرور یا شناسه کاربر" style="min-width:280px">
+  <button type="submit" class="grey">جستجو</button>
   <a href="/services" class="muted small">حذف فیلتر</a>
 </form>
-<form method="post" action="/services/delete"
+<form id="svcform" method="post" action="/services/delete"
       onsubmit="return confirm('سرویس‌های تیک‌خورده از پنل 3x-ui و ربات حذف شوند؟')">
-  <div class="row">
-    <label class="small muted" style="display:flex;align-items:center;gap:6px;cursor:pointer">
-      <input type="checkbox" onclick="for (const c of document.querySelectorAll('input[name=sel]')) c.checked = this.checked;">
-      انتخاب همه
-    </label>
-    <button type="submit" class="red">🗑 حذف انتخاب‌شده‌ها</button>
-    <span class="muted small">هر سرویس تیک‌خورده از پنل 3x-ui و از ربات حذف می‌شود و به کاربر در تلگرام اطلاع داده می‌شود.</span>
-  </div>
   <div class="tablewrap"><table>
-  <tr><th></th><th>نام کانفیگ</th><th>کاربر</th><th>پلن</th><th>سرور</th><th>لینک اشتراک</th><th>تاریخ خرید</th></tr>
+  <tr><th class="checkcol"><input type="checkbox" id="selall" title="انتخاب همه"></th>
+      <th>نام کانفیگ</th><th>کاربر</th><th>پلن</th><th>سرور</th><th>لینک اشتراک</th><th>تاریخ خرید</th></tr>
   {rows}</table></div>
+  <div class="bulkbar" id="bulkbar">
+    <span id="selcount">۰ مورد انتخاب شده</span>
+    <button type="submit" id="bulkdelete" class="red mini" disabled>🗑 حذف انتخاب‌شده‌ها</button>
+    <button type="button" id="clearsel" class="grey mini">لغو انتخاب</button>
+  </div>
 </form>
+<p class="muted small" style="margin-top:10px">هر سرویس تیک‌خورده از پنل 3x-ui و از ربات حذف می‌شود و به کاربر در تلگرام اطلاع داده می‌شود.</p>
 """
         render(self, "سرویس‌ها", body, active="/services")
 
