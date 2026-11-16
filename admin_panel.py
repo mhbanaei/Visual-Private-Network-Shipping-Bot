@@ -556,6 +556,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.page_user(parts[2], qs)
             if path == "/services":
                 return self.page_services(qs)
+            if path == "/services/open-panel":
+                return self.action_open_panel(qs)
             if path == "/receipts":
                 return self.page_receipts(qs)
             if path == "/transactions":
@@ -677,10 +679,11 @@ class Handler(BaseHTTPRequestHandler):
         top_users = sorted(users.items(), key=lambda kv: -float(kv[1].get("balance") or 0))[:5]
         top_rows = "".join(
             f'<tr><td><a href="/user/{uid}">{uid}</a></td>'
-            f'<td>{html.escape(("@" + u["username"]) if u.get("username") else (u.get("first_name") or "—"))}</td>'
+            f'<td>{html.escape(str(u.get("first_name") or "—"))}</td>'
+            f'<td>{html.escape(("@" + u["username"]) if u.get("username") else "—")}</td>'
             f'<td>{money(u.get("balance"))}</td></tr>'
             for uid, u in top_users
-        ) or "<tr><td colspan='3' class='muted'>کاربری نیست.</td></tr>"
+        ) or "<tr><td colspan='4' class='muted'>کاربری نیست.</td></tr>"
 
         tx_rows = ""
         for tx in db.recent_transactions(10):
@@ -712,7 +715,7 @@ class Handler(BaseHTTPRequestHandler):
 <div class="grid2" style="margin-top:18px">
   <div>
     <h2>ثروتمندترین کاربران</h2>
-    <div class="tablewrap"><table><tr><th>شناسه</th><th>کاربر</th><th>موجودی</th></tr>{top_rows}</table></div>
+    <div class="tablewrap"><table><tr><th>شناسه</th><th>نام</th><th>یوزرنیم</th><th>موجودی</th></tr>{top_rows}</table></div>
   </div>
   <div>
     <h2>وضعیت</h2>
@@ -1430,6 +1433,14 @@ class Handler(BaseHTTPRequestHandler):
                              else f"سرویس «{config_name}» حذف نشد: {message}"),
                             "ok" if ok else "bad"))
 
+    def action_open_panel(self, qs):
+        """باز کردن پنل 3x-ui سرور انتخابشده در تب جدید"""
+        server_key = (qs.get("server") or "").strip()
+        if server_key not in xui_api.server_keys():
+            return self.redirect(flash("/services", "سرور انتخاب‌شده معتبر نیست.", "bad"))
+        target = xui_api.base_url(server_key) + "/panel/inbounds"
+        self.redirect(target)
+
     def action_resync_servers(self):
         """بازخوانی همهٔ سرویس‌ها از پنل 3x-ui و اعمال تغییرات دستی سرور در ربات"""
         users = db.load_users()
@@ -1688,6 +1699,11 @@ class Handler(BaseHTTPRequestHandler):
         if not rows:
             rows = ("<tr><td colspan='7'><div class='empty'>"
                     "سرویسی با این فیلتر نیست.</div></td></tr>")
+        server_options = "".join(
+            f'<option value="{html.escape(key)}">{html.escape(xui_api.display_name(key))}'
+            f' — {html.escape(key)}</option>'
+            for key in xui_api.server_keys()
+        )
         body = f"""
 {self.flash_from_query(qs)}
 <h1>همهٔ سرویس‌ها<span class="count-badge">{count} مورد</span></h1>
@@ -1700,6 +1716,13 @@ class Handler(BaseHTTPRequestHandler):
       onsubmit="return confirm('همهٔ سرویس‌ها با پنل 3x-ui مقایسه شوند؟ تغییر نام‌ها و حذف‌ها در ربات ذخیره و به کاربران اطلاع داده می‌شود.')">
   <button type="submit">🔄 بازخوانی سرورها</button>
   <span class="muted small">تغییراتی که مستقیم از داخل 3x-ui اعمال شده را می‌خواند: تغییر نام (با UUID)، حذف کلاینت‌ها و به‌روزرسانی لینک اشتراک؛ سپس به کاربر تلگرام اطلاع می‌دهد.</span>
+</form>
+<form class="row" method="get" action="/services/open-panel" target="_blank">
+  <select name="server" required>
+    {server_options}
+  </select>
+  <button type="submit" class="grey">🌐 باز کردن پنل 3x-ui</button>
+  <span class="muted small">اول سرور را انتخاب کن؛ پنل همان سرور در تب جدید باز می‌شود.</span>
 </form>
 <form id="svcform" method="post" action="/services/delete"
       onsubmit="return confirm('سرویس‌های تیک‌خورده از پنل 3x-ui و ربات حذف شوند؟')">

@@ -87,6 +87,8 @@ def get_protocol_settings(server_key):
 # --- تنظیمات رفرال ---
 REFERRAL_PERCENT = 20  # درصد رفرال (مثلاً 20٪)
 REFERRAL_MIN_AMOUNT = 10000  # حداقل مبلغ شارژ برای احتساب رفرال (تومان)
+REFERRAL_BONUS_REFERRALS = 20   # هر ۲۰ نفر رفرال = یک هدیهٔ حجمی (نه یک گیگ به ازای هر نفر)
+REFERRAL_BONUS_GB = 20          # مقدار هر هدیه: ۲۰ گیگ، یکجا روی یکی از سرویس‌های خریداری‌شده
 
 
 def user_referral_percent(user_id) -> float:
@@ -146,7 +148,7 @@ MAIN_MENU_REPLY_MARKUP = ReplyKeyboardMarkup(MAIN_MENU_KEYBOARD, resize_keyboard
 # --- قیمت‌گذاری سفارشی (خرید بی‌نهایت / حجمی) ---
 # ============================================================
 UNLIMITED_PRICE_PER_USER = 400000      # سرویس بی‌نهایت: هر کاربر ۴۰۰ هزار تومان
-VOLUME_PRICE_PER_GB = 4000             # سرویس حجمی: هر گیگ ۴ هزار تومان
+VOLUME_PRICE_PER_GB = 2000             # سرویس حجمی: هر گیگ ۲ هزار تومان
 VOLUME_MAX_GB = 100                    # حداکثر حجم قابل خرید
 CUSTOM_MAX_USERS = 10                  # حداکثر کاربر (بر اساس IP)
 CUSTOM_USER_MULTIPLIER = 1.5           # ضریب تصاعدی قیمت برای هر کاربر اضافه
@@ -1022,6 +1024,39 @@ def get_referral_history(referrer_id: int) -> list:
     if str_referrer_id in referral_data.get("referrals", {}):
         return referral_data["referrals"][str_referrer_id]
     return []
+
+def get_referral_bonus_info(user_id: int) -> dict:
+    """وضعیت هدیهٔ حجمی رفرال: هر ۲۰ نفر رفرال = ۲۰ گیگ یکجا روی یک سرویس"""
+    referral_info = get_user_referral_info(user_id)
+    count = int(referral_info.get("referrals_count", 0) or 0)
+    data = load_referral_data()
+    record = (data.get("bonus_claims") or {}).get(str(user_id)) or {}
+    claimed = int(record.get("claimed", 0) or 0)
+    earned = count // REFERRAL_BONUS_REFERRALS
+    return {
+        "referrals_count": count,
+        "claimed": claimed,
+        "earned": earned,
+        "available": max(0, earned - claimed),
+        "remainder": count % REFERRAL_BONUS_REFERRALS,
+        "to_next": REFERRAL_BONUS_REFERRALS - (count % REFERRAL_BONUS_REFERRALS),
+        "gb": REFERRAL_BONUS_GB,
+    }
+
+
+def record_referral_bonus_claim(user_id: int, config_name: str) -> None:
+    """ثبت دریافت یک هدیهٔ حجمی رفرال روی سرویس مشخص"""
+    data = load_referral_data()
+    claims = data.setdefault("bonus_claims", {})
+    record = claims.setdefault(str(user_id), {"claimed": 0, "history": []})
+    record["claimed"] = int(record.get("claimed", 0) or 0) + 1
+    record.setdefault("history", []).append({
+        "config_name": config_name,
+        "gb": REFERRAL_BONUS_GB,
+        "date": datetime.datetime.now().isoformat(),
+    })
+    save_referral_data(data)
+
 
 def get_referral_earnings_history(referrer_id: int) -> list:
     """دریافت تاریخچه درآمدهای رفرال یک کاربر"""
@@ -3184,6 +3219,7 @@ async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user_id = update.effective_user.id
     balance = get_user_balance(user_id)
     num_services = len(get_user_services(user_id))
+    bonus_info = get_referral_bonus_info(user_id)
     
     # دریافت اطلاعات رفرال
     referral_info = get_user_referral_info(user_id)
@@ -3204,7 +3240,8 @@ async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     
     message_text += (
         f"🔹 **تعداد کاربران رفرال:** **{referrals_count}** نفر\n"
-        f"🔹 **درآمد رفرال:** **{referral_earnings:,.0f}** تومان\n\n"
+        f"🔹 **درآمد رفرال:** **{referral_earnings:,.0f}** تومان\n"
+        f"🔹 **هدیهٔ آمادهٔ دریافت:** **{bonus_info['available']}** عدد ({bonus_info['available'] * REFERRAL_BONUS_GB} گیگ)\n\n"
         f"**نکته:** برای شارژ، از دکمه «💰 شارژ کیف پول» در منوی اصلی استفاده کنید.\n"
         f"برای دریافت لینک رفرال خود، روی دکمه «🔗 لینک رفرال» کلیک کنید."
     )
@@ -3234,7 +3271,7 @@ async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message_text = (
         f"**🔗 لینک رفرال شما**\n\n"
         f"لینک اختصاصی شما:\n`{ref_link}`\n\n"
-        f"📊 آمار رفرال شما:**\n"
+        f"📊 **آمار رفرال شما:**\n"
         f"🔸 تعداد کاربران جذب شده: **{referrals_count}** نفر\n"
         f"🔸 مجموع درآمد رفرال: **{referral_earnings:,.0f}** تومان\n"
         f"🔸 درصد رفرال: **{user_referral_percent(user_id):g}%**\n"
@@ -3249,6 +3286,16 @@ async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message_text += "2. دوستان شما با کلیک روی لینک وارد ربات می‌شوند\n"
     message_text += "3. رفرال شما برای همیشه در پروفایلشان ثبت می‌شود\n"
     message_text += f"4. از هر شارژی که انجام دهند، **{REFERRAL_PERCENT}%** به حساب شما اضافه می‌شود\n\n"
+
+    # هدیهٔ حجمی: هر ۲۰ نفر رفرال = ۲۰ گیگ یکجا روی یکی از سرویس‌های خریداری‌شده
+    bonus_info = get_referral_bonus_info(user_id)
+    message_text += (f"**🎁 هدیهٔ حجمی:** هر {REFERRAL_BONUS_REFERRALS} نفر رفرال = "
+                     f"{REFERRAL_BONUS_GB} گیگ حجم، یک‌جا روی یکی از سرویس‌های خریداری‌شده.\n")
+    if bonus_info['available'] > 0:
+        message_text += (f"🎁 هدیهٔ آماده: **{bonus_info['available']}** عدد "
+                         f"({bonus_info['available'] * REFERRAL_BONUS_GB} گیگ) — از دکمهٔ زیر دریافت کنید.\n")
+    else:
+        message_text += f"تا هدیهٔ بعدی: **{bonus_info['to_next']}** نفر.\n"
     
     message_text += "\n**⚠️ توجه:**\n"
     message_text += f"• رفرال هر کاربر فقط یک بار و در اولین ورود ثبت می‌شود\n"
@@ -3259,8 +3306,16 @@ async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message_text += f"• در صورتی که مبلغ درآمد شما از رفرال بیش از 500,000 تومان شود\n"
     message_text += f"• میتوانید با ثبت درخواست در پشتیبانی مبلغ درآمد خود را به کارت بانکی خود واریز کنید\n"
     
+    # دکمهٔ دریافت هدیهٔ حجمی رفرال (فقط اگر هدیهٔ آماده وجود داشته باشد)
+    bonus_rows = []
+    if bonus_info['available'] > 0:
+        bonus_rows.append([InlineKeyboardButton(
+            f"🎁 دریافت هدیهٔ حجمی ({REFERRAL_BONUS_GB} گیگ)",
+            callback_data="REFERRAL_BONUS_CLAIM")])
+
     # ایجاد دکمه‌های اشتراک‌گذاری
     keyboard = [
+        *bonus_rows,
         [InlineKeyboardButton("📲 اشتراک‌گذاری لینک", url=f"tg://msg_url?url={ref_link}&text=لینک%20رفرال%20من")],
         [InlineKeyboardButton("📊 تاریخچه درآمد رفرال", callback_data=f"REFERRAL_HISTORY_{user_id}")]
     ]
@@ -3313,6 +3368,201 @@ async def referral_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.edit_message_text(message_text, parse_mode="Markdown", reply_markup=reply_markup)
     except Exception:
         await context.bot.send_message(user_id, message_text, parse_mode="Markdown", reply_markup=reply_markup)
+
+# ============================================================
+# --- هدیهٔ حجمی رفرال ---
+# ============================================================
+
+async def referral_bonus_claim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش سرویس‌های کاربر برای اعمال هدیهٔ حجمی رفرال"""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    bonus = get_referral_bonus_info(user_id)
+    back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_referral_link")]])
+
+    if bonus["available"] <= 0:
+        text = (
+            "🎁 **هدیهٔ حجمی رفرال**\n\n"
+            "در حال حاضر هدیهٔ آمادهٔ دریافت ندارید.\n"
+            f"به ازای هر **{REFERRAL_BONUS_REFERRALS}** نفر که با لینک شما وارد شوند، **{REFERRAL_BONUS_GB} گیگ** حجم هدیه می‌گیرید.\n\n"
+            f"رفرال‌های شما: **{bonus['referrals_count']}** نفر\n"
+            f"تا هدیهٔ بعدی: **{bonus['to_next']}** نفر"
+        )
+        try:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=back_markup)
+        except Exception:
+            await context.bot.send_message(user_id, text, parse_mode="Markdown", reply_markup=back_markup)
+        return
+
+    services = get_user_services(user_id)
+    if not services:
+        text = (
+            "🎁 **هدیهٔ حجمی رفرال**\n\n"
+            "شما هنوز سرویسی خریداری نکرده‌اید.\n"
+            f"هدیهٔ شما (**{bonus['available']} × {REFERRAL_BONUS_GB} گیگ**) محفوظ می‌ماند و بعد از خرید اولین سرویس قابل دریافت است."
+        )
+        try:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=back_markup)
+        except Exception:
+            await context.bot.send_message(user_id, text, parse_mode="Markdown", reply_markup=back_markup)
+        return
+
+    keyboard = []
+    for svc in services:
+        name = svc.get("config_name") or ""
+        server_name = SERVERS_CONFIG.get(svc.get("server_key", ""), {}).get("display_name", "نامشخص")
+        keyboard.append([InlineKeyboardButton(
+            f"🧩 {name} — {server_name}", callback_data=f"REFERRAL_BONUS_SVC_{name}")])
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_referral_link")])
+
+    text = (
+        "🎁 **هدیهٔ حجمی رفرال**\n\n"
+        f"شما **{bonus['available']}** هدیهٔ **{REFERRAL_BONUS_GB} گیگی** آمادهٔ دریافت دارید.\n"
+        f"سرویسی را انتخاب کنید که **{REFERRAL_BONUS_GB} گیگ** به حجم آن اضافه شود:"
+    )
+    markup = InlineKeyboardMarkup(keyboard)
+    try:
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
+    except Exception:
+        await context.bot.send_message(user_id, text, parse_mode="Markdown", reply_markup=markup)
+
+
+async def referral_bonus_choose_service(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش صفحهٔ تأیید هدیه روی سرویس انتخاب‌شده"""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    config_name = query.data.split("REFERRAL_BONUS_SVC_", 1)[1]
+    bonus = get_referral_bonus_info(user_id)
+    service = next((s for s in get_user_services(user_id) if s.get("config_name") == config_name), None)
+    back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 انتخاب سرویس دیگر", callback_data="REFERRAL_BONUS_CLAIM")]])
+
+    if not service:
+        text = "❌ این سرویس در حساب شما پیدا نشد."
+        try:
+            await query.edit_message_text(text, reply_markup=back_markup)
+        except Exception:
+            await context.bot.send_message(user_id, text, reply_markup=back_markup)
+        return
+
+    if bonus["available"] <= 0:
+        text = "❌ هدیهٔ آمادهٔ دریافت ندارید. هر ۲۰ نفر رفرال = ۲۰ گیگ حجم هدیه."
+        try:
+            await query.edit_message_text(text, reply_markup=back_markup)
+        except Exception:
+            await context.bot.send_message(user_id, text, reply_markup=back_markup)
+        return
+
+    server_key = service.get("server_key")
+    server_name = SERVERS_CONFIG.get(server_key, {}).get("display_name", "نامشخص")
+    _, client_data = await xui_get_client_info_by_name(server_key, config_name)
+
+    if not client_data:
+        text = f"❌ اطلاعات سرویس {config_name} در پنل پیدا نشد. لطفاً بعداً دوباره تلاش کنید."
+        try:
+            await query.edit_message_text(text, reply_markup=back_markup)
+        except Exception:
+            await context.bot.send_message(user_id, text, reply_markup=back_markup)
+        return
+
+    total_bytes = int(client_data.get("totalGB") or 0)
+    if total_bytes <= 0:
+        text = (
+            f"♾️ سرویس {config_name} نامحدود است و حجم اضافه نمی‌گیرد.\n"
+            "یکی از سرویس‌های حجمی خود را برای دریافت هدیه انتخاب کنید."
+        )
+        try:
+            await query.edit_message_text(text, reply_markup=back_markup)
+        except Exception:
+            await context.bot.send_message(user_id, text, reply_markup=back_markup)
+        return
+
+    text = (
+        "🎁 **تأیید هدیهٔ حجمی رفرال**\n\n"
+        f"📛 سرویس: **{config_name}**\n"
+        f"🌐 سرور: {server_name}\n"
+        f"💾 حجم فعلی: {convert_bytes_to_display(total_bytes)}\n"
+        f"🎁 حجم هدیه: **+{REFERRAL_BONUS_GB} GB**\n\n"
+        f"با تأیید، این حجم به سرویس اضافه می‌شود و یکی از **{bonus['available']}** هدیهٔ آمادهٔ شما مصرف می‌شود."
+    )
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"✅ تأیید و شارژ {REFERRAL_BONUS_GB} گیگ",
+                              callback_data=f"REFERRAL_BONUS_APPLY_{config_name}")],
+        [InlineKeyboardButton("🔙 انتخاب سرویس دیگر", callback_data="REFERRAL_BONUS_CLAIM")],
+    ])
+    try:
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
+    except Exception:
+        await context.bot.send_message(user_id, text, parse_mode="Markdown", reply_markup=markup)
+
+
+async def referral_bonus_apply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """شارژ ۲۰ گیگ هدیهٔ رفرال روی سرویس انتخاب‌شده"""
+    query = update.callback_query
+    await query.answer("در حال اعمال هدیه...")
+    user_id = query.from_user.id
+    config_name = query.data.split("REFERRAL_BONUS_APPLY_", 1)[1]
+    bonus = get_referral_bonus_info(user_id)
+    service = next((s for s in get_user_services(user_id) if s.get("config_name") == config_name), None)
+    back_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به لینک رفرال", callback_data="back_to_referral_link")]])
+
+    if not service or bonus["available"] <= 0:
+        text = "❌ این هدیه قابل دریافت نیست. لطفاً از صفحهٔ لینک رفرال دوباره تلاش کنید."
+        try:
+            await query.edit_message_text(text, reply_markup=back_markup)
+        except Exception:
+            await context.bot.send_message(user_id, text, reply_markup=back_markup)
+        return
+
+    server_key = service.get("server_key")
+    server_name = SERVERS_CONFIG.get(server_key, {}).get("display_name", "نامشخص")
+
+    success, new_total_gb, _ = await xui_update_client_v2(
+        server_key, user_id, config_name, REFERRAL_BONUS_GB, 0
+    )
+
+    if not success:
+        text = "❌ شارژ هدیه انجام نشد و هیچ هدیه‌ای از حساب شما کم نشد. لطفاً دوباره تلاش کنید یا با پشتیبانی تماس بگیرید."
+        try:
+            await query.edit_message_text(text, reply_markup=back_markup)
+        except Exception:
+            await context.bot.send_message(user_id, text, reply_markup=back_markup)
+        return
+
+    record_referral_bonus_claim(user_id, config_name)
+    bonus_after = get_referral_bonus_info(user_id)
+    add_transaction(user_id, "referral_bonus", 0,
+                    f"هدیهٔ {REFERRAL_BONUS_GB} گیگ رفرال روی سرویس {config_name}")
+
+    text = (
+        f"✅ **{REFERRAL_BONUS_GB} گیگ هدیهٔ رفرال روی سرویس {config_name} شارژ شد!**\n\n"
+        f"🌐 سرور: {server_name}\n"
+        f"💾 حجم جدید: **{new_total_gb:.2f} GB**\n"
+        f"🎁 هدیه‌های باقی‌مانده: **{bonus_after['available']}** عدد\n\n"
+        f"تا هدیهٔ بعدی: **{bonus_after['to_next']}** نفر رفرال"
+    )
+    try:
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=back_markup)
+    except Exception:
+        await context.bot.send_message(user_id, text, parse_mode="Markdown", reply_markup=back_markup)
+
+    try:
+        for admin_id in ADMIN_CHAT_IDS:
+            await context.bot.send_message(
+                admin_id,
+                f"🎁 هدیهٔ حجمی رفرال\n\n"
+                f"👤 کاربر: {format_user_info(user_id, show_copyable=False)}\n"
+                f"📛 کانفیگ: `{config_name}`\n"
+                f"🌐 سرور: {server_name}\n"
+                f"➕ حجم: {REFERRAL_BONUS_GB} گیگ\n"
+                f"📊 حجم کل جدید: {new_total_gb:.2f} GB\n"
+                f"🕒 زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}",
+                parse_mode="Markdown"
+            )
+    except Exception as exc:
+        logger.error(f"Failed to send referral bonus log to admins: {exc}")
+
 
 # ============================================================
 # --- بخش آموزش اتصال ---
@@ -5497,7 +5747,20 @@ async def back_to_referral_link(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer("بازگشت...")
     user_id = query.from_user.id
     
-    await my_referral(update, context)
+    # Update در callback اجازهٔ تغییر message را نمی‌دهد؛ پیام قبلی را پاک و صفحه را دوباره می‌فرستیم
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    class _ReplyShim:
+        async def reply_text(self, *args, **kwargs):
+            return await query.message.reply_text(*args, **kwargs)
+
+    shim = type("_ShimUpdate", (), {})()
+    shim.effective_user = query.from_user
+    shim.message = _ReplyShim()
+    await my_referral(shim, context)
 
 async def back_to_main_from_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """بازگشت به منوی اصلی از بخش آموزش"""
@@ -5534,6 +5797,15 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     if data.startswith("reject_receipt_"):
         return await reject_receipt_callback(update, context)
         
+    if data == "REFERRAL_BONUS_CLAIM":
+        return await referral_bonus_claim(update, context)
+
+    if data.startswith("REFERRAL_BONUS_SVC_"):
+        return await referral_bonus_choose_service(update, context)
+
+    if data.startswith("REFERRAL_BONUS_APPLY_"):
+        return await referral_bonus_apply(update, context)
+
     if data.startswith("REFERRAL_HISTORY_"):
         return await referral_history(update, context)
         
@@ -5966,7 +6238,7 @@ async def contact_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE,
 def custom_plan_price(mode: str, volume_gb: int, users: int) -> int:
     """قیمت سرویس سفارشی
     بی‌نهایت: ۴۰۰٬۰۰۰ تومان به ازای هر کاربر
-    حجمی: حجم × ۴٬۰۰۰ تومان و برای هر کاربر اضافه ضریب ۱.۵ تصاعدی"""
+    حجمی: حجم × ۲٬۰۰۰ تومان و برای هر کاربر اضافه ضریب ۱.۵ تصاعدی"""
     if mode == 'unlimited':
         return UNLIMITED_PRICE_PER_USER * users
     return int(round(volume_gb * VOLUME_PRICE_PER_GB * (CUSTOM_USER_MULTIPLIER ** (users - 1))))
