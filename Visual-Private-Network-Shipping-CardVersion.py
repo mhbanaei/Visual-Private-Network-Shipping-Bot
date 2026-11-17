@@ -5022,6 +5022,72 @@ async def recent_purchases_command(update: Update, context: ContextTypes.DEFAULT
 # --- سیستم جدید شارژ کیف پول (کارت به کارت) ---
 # ============================================================
 
+PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def parse_toman_amount(raw):
+    """خواندن مبلغ تومانی از متن کاربر: ارقام فارسی، ویرگول، فاصله و واحد پول مجاز است"""
+    if raw is None:
+        return None
+    text = str(raw).translate(PERSIAN_DIGITS)
+    for word in ("تومان", "تومن", "ریال", "rial", "IRR", "irt"):
+        text = text.replace(word, "")
+    text = text.replace("٬", "").replace(",", "").replace("٫", ".").replace(" ", "").replace("\u200c", "")
+    if not re.fullmatch(r"\d+(\.0+)?", text):
+        return None
+    return int(float(text))
+
+
+# دکمه‌های منوی اصلی: اگر وسط شارژ کیف پول زده شوند، شارژ لغو و همان گزینه اجرا می‌شود
+WALLET_MENU_PASSTHROUGH = {
+    "🛍️ خرید سرویس": "select_server_for_purchase",
+    "📂 سرویس‌های من": "my_services",
+    "👤 حساب من": "my_account",
+    "🔗 لینک رفرال": "my_referral",
+    "📚 آموزش اتصال": "connection_tutorials_start",
+}
+WALLET_MENU_BUTTONS = tuple(WALLET_MENU_PASSTHROUGH) + ("💰 شارژ کیف پول", "📞 پشتیبانی")
+
+
+def reset_wallet_flow(context):
+    """پاک کردن وضعیت فرآیند شارژ کیف پول از داده‌های کاربر"""
+    for key in ("wallet_flow", "receipt_file_id", "in_conversation"):
+        context.user_data.pop(key, None)
+
+
+async def wallet_menu_escape(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دکمهٔ منو در میانهٔ شارژ کیف پول: فرآیند شارژ بسته می‌شود و گزینهٔ زده‌شده اجرا می‌گردد"""
+    text = (update.message.text or "").strip() if update.message else ""
+    reset_wallet_flow(context)
+
+    if text == "💰 شارژ کیف پول":
+        return await wallet_start(update, context)
+
+    target = WALLET_MENU_PASSTHROUGH.get(text)
+    handler = globals().get(target) if target else None
+    if handler is not None:
+        try:
+            await handler(update, context)
+            return ConversationHandler.END
+        except Exception as exc:
+            logger.error(f"Failed to continue to {target} after wallet cancel: {exc}")
+
+    await update.message.reply_text(
+        "فرآیند شارژ کیف پول لغو شد. برای ادامه، دوباره گزینهٔ مورد نظر را از منو انتخاب کنید.",
+        reply_markup=MAIN_MENU_REPLY_MARKUP,
+    )
+    return ConversationHandler.END
+
+
+async def wallet_amount_requires_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """اگر به‌جای مبلغ عکس فرستاده شد، فقط یادآوری می‌کند و در همان مرحله می‌ماند"""
+    await update.message.reply_text(
+        "لطفاً مبلغ واریزی را به عدد وارد کنید (مثلاً 500000).",
+        reply_markup=ReplyKeyboardMarkup([["❌ لغو عملیات"]], resize_keyboard=True),
+    )
+    return STATE_GET_AMOUNT
+
+
 async def wallet_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """شروع فرآیند شارژ کیف پول با سیستم کارت به کارت"""
     user_id = update.effective_user.id
@@ -5077,13 +5143,18 @@ async def wallet_receive_amount(update: Update, context: ContextTypes.DEFAULT_TY
     if update.message.text.strip().lower() == "❌ لغو عملیات":
         return await cancel_conversation(update, context)
     
-    try:
-        amount_toman = int(update.message.text.replace(',', ''))
-        if amount_toman < 1000:
-            await update.message.reply_text("❌ مبلغ وارد شده باید حداقل ۱,۰۰۰ تومان باشد.")
-            return STATE_GET_AMOUNT
-    except ValueError:
-        await update.message.reply_text("❌ مبلغ وارد شده نامعتبر است. لطفاً فقط عدد وارد کنید.")
+    amount_toman = parse_toman_amount(update.message.text)
+    if amount_toman is None:
+        await update.message.reply_text(
+            "❌ مبلغ وارد شده نامعتبر است. لطفاً فقط عدد وارد کنید (مثلاً 500000).",
+            reply_markup=ReplyKeyboardMarkup([["❌ لغو عملیات"]], resize_keyboard=True),
+        )
+        return STATE_GET_AMOUNT
+    if amount_toman < 1000:
+        await update.message.reply_text(
+            "❌ مبلغ وارد شده باید حداقل ۱,۰۰۰ تومان باشد.",
+            reply_markup=ReplyKeyboardMarkup([["❌ لغو عملیات"]], resize_keyboard=True),
+        )
         return STATE_GET_AMOUNT
     
     receipt_file_id = context.user_data.get('receipt_file_id')
@@ -6564,10 +6635,13 @@ def main() -> None:
         entry_points=[MessageHandler(filters.Text("💰 شارژ کیف پول"), wallet_start)],
         states={
             STATE_WAITING_FOR_RECEIPT: [
+                MessageHandler(filters.Text(list(WALLET_MENU_BUTTONS)), wallet_menu_escape),
                 MessageHandler(filters.PHOTO, wallet_receive_receipt),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, wallet_receive_receipt),
             ],
             STATE_GET_AMOUNT: [
+                MessageHandler(filters.Text(list(WALLET_MENU_BUTTONS)), wallet_menu_escape),
+                MessageHandler(filters.PHOTO, wallet_amount_requires_number),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, wallet_receive_amount),
             ],
         },

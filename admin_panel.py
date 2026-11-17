@@ -119,6 +119,44 @@ def show_int(value) -> str:
     return f"{number:,.2f}"
 
 
+def sort_state(qs, default_key: str, default_dir: str = "desc",
+               key_param: str = "sort", dir_param: str = "dir"):
+    """کلید و جهت مرتب‌سازی از query string (جهت نامعتبر = پیش‌فرض)"""
+    key = (qs.get(key_param) or default_key).strip() or default_key
+    direction = (qs.get(dir_param) or default_dir).strip().lower()
+    if direction not in ("asc", "desc"):
+        direction = default_dir
+    return key, direction
+
+
+def sort_num(value, default=0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def sort_link(qs, path: str, key: str, label: str, active_key: str, active_dir: str,
+              keep=("q",), key_param: str = "sort", dir_param: str = "dir") -> str:
+    """هدر جدول کلیک‌پذیر؛ کلیک بعدی جهت مرتب‌سازی را برمی‌گرداند"""
+    new_dir = "asc" if (active_key == key and active_dir == "desc") else "desc"
+    params = {name: qs.get(name) for name in keep if qs.get(name)}
+    params[key_param] = key
+    params[dir_param] = new_dir
+    href = f"{path}?{urllib.parse.urlencode(params)}"
+    marker = ""
+    if active_key == key:
+        marker = " ▲" if active_dir == "asc" else " ▼"
+    return (f'<th class="sortable"><a href="{html.escape(href, quote=True)}"'
+            f' title="مرتب‌سازی بر اساس {html.escape(label)}">{html.escape(label)}{marker}</a></th>')
+
+
+def sort_suffix(qs, names=("sort", "dir")) -> str:
+    """پایانهٔ query برای حفظ مرتب‌سازی در لینک‌های فیلتر"""
+    pairs = [(name, qs.get(name)) for name in names if qs.get(name)]
+    return ("&" + urllib.parse.urlencode(pairs)) if pairs else ""
+
+
 def parent_invalid_name(name: str) -> bool:
     """نام کانفیگ باید انگلیسی و بین ۳ تا ۳۲ کاراکتر باشد"""
     return not re.fullmatch(r"[A-Za-z0-9_-]{3,32}", name or "")
@@ -307,6 +345,8 @@ PAGE = """<!DOCTYPE html>
   table {{ width:100%; border-collapse:collapse; background:var(--surface); min-width:520px; }}
   th, td {{ padding:11px 12px; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; }}
   th {{ color:var(--muted); font-weight:normal; font-size:12.5px; position:sticky; top:0; background:var(--surface); }}
+  th.sortable a {{ color:inherit; text-decoration:none; cursor:pointer; }}
+  th.sortable a:hover {{ color:var(--accent); }}
   tr:last-child td {{ border-bottom:none; }}
   tr:hover td {{ background:var(--rowhover); }}
   td.wrap {{ white-space:normal; word-break:break-all; min-width:180px; }}
@@ -736,7 +776,11 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- users ----------
     def page_users(self, qs):
         query = (qs.get("q") or "").strip()
-        sort = qs.get("sort") or "balance"
+        sort, direction = sort_state(qs, "balance", "desc")
+
+        def th(key, label):
+            return sort_link(qs, "/users", key, label, sort, direction)
+
         users = db.load_users()
         items = []
         for uid, data in users.items():
@@ -747,13 +791,17 @@ class Handler(BaseHTTPRequestHandler):
             if query and query.lower() not in haystack:
                 continue
             items.append((uid, data))
-        key = {
-            "balance": lambda x: -float(x[1].get("balance") or 0),
-            "services": lambda x: -len(x[1].get("services") or []),
-            "join": lambda x: str(x[1].get("join_date") or ""),
+        sorters = {
             "id": lambda x: int(x[0]),
-        }.get(sort, lambda x: -float(x[1].get("balance") or 0))
-        items.sort(key=key)
+            "username": lambda x: str(x[1].get("username") or "").lower(),
+            "name": lambda x: str(x[1].get("first_name") or ""),
+            "balance": lambda x: sort_num(x[1].get("balance")),
+            "services": lambda x: len(x[1].get("services") or []),
+            "referrals": lambda x: int(x[1].get("referrals_count") or 0),
+            "percent": lambda x: sort_num(x[1].get("referral_percent"), -1),
+            "join": lambda x: str(x[1].get("join_date") or ""),
+        }
+        items.sort(key=sorters.get(sort, sorters["balance"]), reverse=(direction == "desc"))
 
         rows = ""
         for uid, data in items:
@@ -794,7 +842,7 @@ class Handler(BaseHTTPRequestHandler):
 </form>
 
 <div class="tablewrap"><table>
-<tr><th>شناسه</th><th>یوزرنیم</th><th>نام</th><th>موجودی</th><th>سرویس</th><th>رفرال</th><th>درصد</th><th>عضویت</th><th></th></tr>
+<tr>{th('id', 'شناسه')}{th('username', 'یوزرنیم')}{th('name', 'نام')}{th('balance', 'موجودی')}{th('services', 'سرویس')}{th('referrals', 'رفرال')}{th('percent', 'درصد')}{th('join', 'عضویت')}<th></th></tr>
 {rows}</table></div>
 """
         render(self, "کاربران", body, active="/users")
@@ -809,6 +857,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.not_found()
 
         services = user.get("services") or []
+        svc_sort, svc_dir = sort_state(qs, "purchase", "desc", "svc", "svcdir")
+        svc_sorters = {
+            "name": lambda s: str(s.get("config_name") or "").lower(),
+            "plan": lambda s: str(s.get("internal_key") or ""),
+            "server": lambda s: str(s.get("server_key") or ""),
+            "purchase": lambda s: str(s.get("purchase_date") or ""),
+        }
+        services = sorted(services, key=svc_sorters.get(svc_sort, svc_sorters["purchase"]),
+                          reverse=(svc_dir == "desc"))
+
+        def svc_th(key, label):
+            return sort_link(qs, f"/user/{user_id}", key, label, svc_sort, svc_dir,
+                             keep=(), key_param="svc", dir_param="svcdir")
+
         svc_rows = ""
         for s in services:
             name = str(s.get("config_name") or "")
@@ -841,8 +903,24 @@ class Handler(BaseHTTPRequestHandler):
         if not svc_rows:
             svc_rows = "<tr><td colspan='6' class='muted'>سرویسی ندارد.</td></tr>"
 
+        tx_sort, tx_dir = sort_state(qs, "time", "desc", "tx", "txdir")
+        tx_sorters = {
+            "id": lambda t: str(t.get("id") or ""),
+            "type": lambda t: str(t.get("type") or ""),
+            "amount": lambda t: sort_num(t.get("amount")),
+            "desc": lambda t: str(t.get("description") or ""),
+            "time": lambda t: str(t.get("timestamp") or ""),
+        }
+        user_transactions = sorted(db.load_transaction_history().get(str(user_id), []),
+                                   key=tx_sorters.get(tx_sort, tx_sorters["time"]),
+                                   reverse=(tx_dir == "desc"))
+
+        def tx_th(key, label):
+            return sort_link(qs, f"/user/{user_id}", key, label, tx_sort, tx_dir,
+                             keep=(), key_param="tx", dir_param="txdir")
+
         tx_rows = ""
-        for tx in reversed(db.load_transaction_history().get(str(user_id), [])):
+        for tx in user_transactions:
             tx_rows += (
                 f'<tr><td class="muted small">{html.escape(str(tx.get("id") or ""))}</td>'
                 f'<td>{html.escape(TX_LABELS.get(tx.get("type"), str(tx.get("type"))))}</td>'
@@ -922,7 +1000,7 @@ class Handler(BaseHTTPRequestHandler):
 
 <h2>سرویس‌ها ({len(services)})</h2>
 <div class="tablewrap"><table>
-<tr><th>نام</th><th>پلن</th><th>سرور</th><th>لینک اشتراک</th><th>خرید</th><th>عملیات</th></tr>{svc_rows}</table></div>
+<tr>{svc_th('name', 'نام')}{svc_th('plan', 'پلن')}{svc_th('server', 'سرور')}<th>لینک اشتراک</th>{svc_th('purchase', 'خرید')}<th>عملیات</th></tr>{svc_rows}</table></div>
 
 <div class="box" style="margin-top:10px">
   <h3>افزودن سرویس (یا به‌روزرسانی با همان نام)</h3>
@@ -938,7 +1016,7 @@ class Handler(BaseHTTPRequestHandler):
 
 <h2>تراکنش‌ها</h2>
 <div class="tablewrap"><table>
-<tr><th>شناسه</th><th>نوع</th><th>مبلغ</th><th>توضیح</th><th>زمان</th><th></th></tr>{tx_rows}</table></div>
+<tr>{tx_th('id', 'شناسه')}{tx_th('type', 'نوع')}{tx_th('amount', 'مبلغ')}{tx_th('desc', 'توضیح')}{tx_th('time', 'زمان')}<th></th></tr>{tx_rows}</table></div>
 
 <h2>عملیات حساس</h2>
 <div class="row">
@@ -1528,12 +1606,31 @@ class Handler(BaseHTTPRequestHandler):
         receipts = db.load_pending_receipts()
         users = db.load_users()
         status_filter = qs.get("status") or "all"
-        rows = ""
-        for rid in sorted(receipts, reverse=True):
-            r = receipts[rid]
+        sort, direction = sort_state(qs, "time", "desc")
+
+        def th(key, label):
+            return sort_link(qs, "/receipts", key, label, sort, direction, keep=("status",))
+
+        items = []
+        for rid, r in receipts.items():
             status = r.get("status") or "pending"
             if status_filter != "all" and status != status_filter:
                 continue
+            items.append((rid, r))
+
+        sorters = {
+            "id": lambda x: str(x[0]),
+            "user": lambda x: int(x[1].get("user_id") or 0),
+            "amount": lambda x: sort_num(x[1].get("amount_toman")),
+            "status": lambda x: str(x[1].get("status") or "pending"),
+            "time": lambda x: str(x[1].get("timestamp") or ""),
+            "by": lambda x: str(x[1].get("processed_by") or ""),
+        }
+        items.sort(key=sorters.get(sort, sorters["time"]), reverse=(direction == "desc"))
+
+        rows = ""
+        for rid, r in items:
+            status = r.get("status") or "pending"
             user = users.get(str(r.get("user_id"))) or {}
             who = f"@{user['username']}" if user.get("username") else (user.get("first_name") or "—")
             actions = ""
@@ -1557,7 +1654,7 @@ class Handler(BaseHTTPRequestHandler):
         if not rows:
             rows = "<tr><td colspan='7' class='muted'>رسیدی با این وضعیت نیست.</td></tr>"
         chips = "".join(
-            f'<a class="chip{" active" if status_filter == key else ""}" href="/receipts?status={key}">{label}</a>'
+            f'<a class="chip{" active" if status_filter == key else ""}" href="/receipts?status={key}{sort_suffix(qs)}">{label}</a>'
             for key, label in [("all", "همه"), ("pending", "در انتظار"),
                                ("approved", "تأییدشده"), ("rejected", "رد‌شده")]
         )
@@ -1566,7 +1663,7 @@ class Handler(BaseHTTPRequestHandler):
 <h1>رسیدهای کارت به کارت</h1>
 <div class="chips">{chips}</div>
 <div class="tablewrap"><table>
-<tr><th>شناسه</th><th>کاربر</th><th>مبلغ</th><th>وضعیت</th><th>زمان</th><th>پردازش‌کننده</th><th>عملیات</th></tr>
+<tr>{th('id', 'شناسه')}{th('user', 'کاربر')}{th('amount', 'مبلغ')}{th('status', 'وضعیت')}{th('time', 'زمان')}{th('by', 'پردازش‌کننده')}<th>عملیات</th></tr>
 {rows}</table></div>
 <p class="muted small" style="margin-top:12px">تأیید از پنل، موجودی کاربر را افزایش می‌دهد و تراکنش واریز ثبت می‌کند.</p>
 """
@@ -1607,8 +1704,12 @@ class Handler(BaseHTTPRequestHandler):
     def page_transactions(self, qs):
         tx_type = qs.get("type") or "all"
         search = (qs.get("q") or "").strip().lower()
-        rows = ""
-        count = 0
+        sort, direction = sort_state(qs, "time", "desc")
+
+        def th(key, label):
+            return sort_link(qs, "/transactions", key, label, sort, direction, keep=("q", "type"))
+
+        items = []
         for tx in db.recent_transactions(500):
             if tx_type != "all" and tx.get("type") != tx_type:
                 continue
@@ -1617,7 +1718,20 @@ class Handler(BaseHTTPRequestHandler):
                                 str(tx.get("amount"))]).lower()
                 if search not in hay:
                     continue
-            count += 1
+            items.append(tx)
+
+        sorters = {
+            "user": lambda t: int(t.get("user_id") or 0),
+            "type": lambda t: str(t.get("type") or ""),
+            "amount": lambda t: sort_num(t.get("amount")),
+            "desc": lambda t: str(t.get("description") or ""),
+            "time": lambda t: str(t.get("timestamp") or ""),
+        }
+        items.sort(key=sorters.get(sort, sorters["time"]), reverse=(direction == "desc"))
+        count = len(items)
+
+        rows = ""
+        for tx in items:
             tx_id = str(tx.get("id"))
             rows += (
                 f'<tr><td><input type="checkbox" name="sel" value="{html.escape(tx_id)}"></td>'
@@ -1634,6 +1748,7 @@ class Handler(BaseHTTPRequestHandler):
                     "تراکنشی با این فیلتر نیست.</div></td></tr>")
         q_text = qs.get("q") or ""
         suffix = f"&q={urllib.parse.quote(q_text)}" if q_text else ""
+        suffix += sort_suffix(qs)
         chips = "".join(
             f'<a class="chip{" active" if tx_type == key else ""}" href="/transactions?type={key}{suffix}">{label}</a>'
             for key, label in [("all", "همه")] + list(TX_LABELS.items())
@@ -1652,7 +1767,7 @@ class Handler(BaseHTTPRequestHandler):
       onsubmit="return confirm('تراکنش‌های تیک‌خورده حذف شوند؟')">
   <div class="tablewrap"><table>
   <tr><th class="checkcol"><input type="checkbox" id="selall" title="انتخاب همه"></th>
-      <th>کاربر</th><th>نوع</th><th>مبلغ</th><th>توضیح</th><th>زمان</th><th></th></tr>
+      {th('user', 'کاربر')}{th('type', 'نوع')}{th('amount', 'مبلغ')}{th('desc', 'توضیح')}{th('time', 'زمان')}<th></th></tr>
   {rows}</table></div>
   <div class="bulkbar" id="bulkbar">
     <span id="selcount">۰ مورد انتخاب شده</span>
@@ -1675,27 +1790,44 @@ class Handler(BaseHTTPRequestHandler):
     def page_services(self, qs):
         search = (qs.get("q") or "").strip().lower()
         users = db.load_users()
-        rows = ""
-        count = 0
+        sort, direction = sort_state(qs, "purchase", "desc")
+
+        def th(key, label):
+            return sort_link(qs, "/services", key, label, sort, direction)
+
+        items = []
         for uid, data in users.items():
             for s in data.get("services") or []:
                 hay = " ".join([str(s.get("config_name")), str(s.get("internal_key")),
                                 str(s.get("server_key")), str(uid)]).lower()
                 if search and search not in hay:
                     continue
-                count += 1
-                name = str(s.get("config_name") or "")
-                token = html.escape(f"{uid}||{name}")
-                rows += (
-                    f'<tr><td><input type="checkbox" name="sel" value="{token}"></td>'
-                    f'<td><a href="/user/{uid}/service/{urllib.parse.quote(name)}">'
-                    f'{html.escape(name)}</a></td>'
-                    f'<td><a href="/user/{uid}">{uid}</a></td>'
-                    f'<td>{html.escape(str(s.get("internal_key") or ""))}</td>'
-                    f'<td>{html.escape(str(s.get("server_key") or ""))}</td>'
-                    f'<td class="wrap muted small">{html.escape(str(s.get("sub_link") or ""))}</td>'
-                    f'<td class="muted small">{html.escape(str(s.get("purchase_date") or "")[:19].replace("T", " "))}</td></tr>'
-                )
+                items.append((uid, s))
+
+        sorters = {
+            "name": lambda x: str(x[1].get("config_name") or "").lower(),
+            "user": lambda x: int(x[0]),
+            "plan": lambda x: str(x[1].get("internal_key") or ""),
+            "server": lambda x: str(x[1].get("server_key") or ""),
+            "purchase": lambda x: str(x[1].get("purchase_date") or ""),
+        }
+        items.sort(key=sorters.get(sort, sorters["purchase"]), reverse=(direction == "desc"))
+        count = len(items)
+
+        rows = ""
+        for uid, s in items:
+            name = str(s.get("config_name") or "")
+            token = html.escape(f"{uid}||{name}")
+            rows += (
+                f'<tr><td><input type="checkbox" name="sel" value="{token}"></td>'
+                f'<td><a href="/user/{uid}/service/{urllib.parse.quote(name)}">'
+                f'{html.escape(name)}</a></td>'
+                f'<td><a href="/user/{uid}">{uid}</a></td>'
+                f'<td>{html.escape(str(s.get("internal_key") or ""))}</td>'
+                f'<td>{html.escape(str(s.get("server_key") or ""))}</td>'
+                f'<td class="wrap muted small">{html.escape(str(s.get("sub_link") or ""))}</td>'
+                f'<td class="muted small">{html.escape(str(s.get("purchase_date") or "")[:19].replace("T", " "))}</td></tr>'
+            )
         if not rows:
             rows = ("<tr><td colspan='7'><div class='empty'>"
                     "سرویسی با این فیلتر نیست.</div></td></tr>")
@@ -1728,7 +1860,7 @@ class Handler(BaseHTTPRequestHandler):
       onsubmit="return confirm('سرویس‌های تیک‌خورده از پنل 3x-ui و ربات حذف شوند؟')">
   <div class="tablewrap"><table>
   <tr><th class="checkcol"><input type="checkbox" id="selall" title="انتخاب همه"></th>
-      <th>نام کانفیگ</th><th>کاربر</th><th>پلن</th><th>سرور</th><th>لینک اشتراک</th><th>تاریخ خرید</th></tr>
+      {th('name', 'نام کانفیگ')}{th('user', 'کاربر')}{th('plan', 'پلن')}{th('server', 'سرور')}<th>لینک اشتراک</th>{th('purchase', 'تاریخ خرید')}</tr>
   {rows}</table></div>
   <div class="bulkbar" id="bulkbar">
     <span id="selcount">۰ مورد انتخاب شده</span>
