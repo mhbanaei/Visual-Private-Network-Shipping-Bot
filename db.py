@@ -498,6 +498,36 @@ def save_referral_data(data: dict) -> None:
         conn.close()
 
 
+def get_kv(key: str, default=None):
+    """خواندن یک مقدار JSON از جدول کلید/مقدار (وضعیت یادآوری‌ها و…)"""
+    init()
+    conn = connect()
+    try:
+        row = conn.execute("SELECT value FROM kv WHERE key=?", (str(key),)).fetchone()
+        if not row:
+            return default
+        return json.loads(row["value"])
+    except (TypeError, ValueError):
+        return default
+    finally:
+        conn.close()
+
+
+def set_kv(key: str, value) -> None:
+    """ذخیرهٔ یک مقدار JSON در جدول کلید/مقدار"""
+    init()
+    conn = connect()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO kv (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(key), json.dumps(value, ensure_ascii=False)),
+            )
+    finally:
+        conn.close()
+
+
 def delete_user(user_id: int) -> bool:
     """حذف کامل کاربر و داده‌های مرتبط"""
     init()

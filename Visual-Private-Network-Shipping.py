@@ -347,7 +347,7 @@ UNLIMITED_PRICE_PER_USER = 400000      # سرویس بی‌نهایت: هر کا
 VOLUME_PRICE_PER_GB = 2000             # سرویس حجمی: هر گیگ ۲ هزار تومان
 VOLUME_MAX_GB = 100                    # حداکثر حجم قابل خرید
 CUSTOM_MAX_USERS = 10                  # حداکثر کاربر (بر اساس IP)
-CUSTOM_USER_MULTIPLIER = 1.5           # ضریب تصاعدی قیمت برای هر کاربر اضافه
+CUSTOM_USER_MULTIPLIER = 1.3           # ضریب تصاعدی قیمت برای هر کاربر اضافه
 CUSTOM_DAYS = 30                       # اعتبار سرویس سفارشی
 STATE_CUSTOM_BUILD = 15                # وضعیت ساخت سرویس سفارشی
 CUSTOM_PLANS = {}                      # پلن‌های سفارشی ساخته‌شده در همین اجرا
@@ -2446,7 +2446,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 def custom_plan_price(mode: str, volume_gb: int, users: int) -> int:
     """قیمت سرویس سفارشی
     بی‌نهایت: ۴۰۰٬۰۰۰ تومان به ازای هر کاربر
-    حجمی: حجم × ۲٬۰۰۰ تومان و برای هر کاربر اضافه ضریب ۱.۵ تصاعدی"""
+    حجمی: حجم × ۲٬۰۰۰ تومان و برای هر کاربر اضافه ضریب ۱.۳ تصاعدی"""
     if mode == 'unlimited':
         return UNLIMITED_PRICE_PER_USER * users
     return int(round(volume_gb * VOLUME_PRICE_PER_GB * (CUSTOM_USER_MULTIPLIER ** (users - 1))))

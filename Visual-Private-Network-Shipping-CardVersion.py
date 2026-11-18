@@ -48,9 +48,13 @@ import datetime
 from typing import Dict, List, Optional, Tuple
 
 # --- تنظیمات لاگ‌گیری ---
+# فقط هشدارها و خطاها در کنسول چاپ می‌شوند تا خروجی CMD شلوغ نشود؛
+# پیام‌های عادی و لاگ‌های کتابخانه‌ها نمایش داده نمی‌شوند.
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(levelname)s - %(message)s", level=logging.WARNING
 )
+for _noisy_logger in ("httpx", "httpcore", "telegram", "telegram.ext", "urllib3", "requests"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ==========================================================
@@ -85,10 +89,21 @@ def get_protocol_settings(server_key):
     }
 
 # --- تنظیمات رفرال ---
-REFERRAL_PERCENT = 20  # درصد رفرال (مثلاً 20٪)
+# 🔧 کلید روشن/خاموش سیستم رفرال: برای غیرفعال کردن کامل، فقط عدد 1 را به 0 تغییر دهید.
+# با مقدار 0 هیچ بخشی از رفرال (دکمه، لینک، آمار، هدیه، پورسانت) در ربات نمایش داده نمی‌شود.
+REFERRAL_ENABLED = 1
+REFERRAL_PERCENT = 2  # درصد رفرال پیش‌فرض (۲٪)
 REFERRAL_MIN_AMOUNT = 10000  # حداقل مبلغ شارژ برای احتساب رفرال (تومان)
 REFERRAL_BONUS_REFERRALS = 20   # هر ۲۰ نفر رفرال = یک هدیهٔ حجمی (نه یک گیگ به ازای هر نفر)
 REFERRAL_BONUS_GB = 20          # مقدار هر هدیه: ۲۰ گیگ، یکجا روی یکی از سرویس‌های خریداری‌شده
+
+
+def referral_enabled() -> bool:
+    """آیا سیستم رفرال فعال است؟ (REFERRAL_ENABLED = 1 فعال، 0 غیرفعال)"""
+    try:
+        return int(REFERRAL_ENABLED) == 1
+    except (TypeError, ValueError):
+        return str(REFERRAL_ENABLED).strip().lower() in ("1", "true", "yes", "on")
 
 
 def user_referral_percent(user_id) -> float:
@@ -140,8 +155,11 @@ MAIN_MENU_KEYBOARD = [
     ["🛍️ خرید سرویس"],
     ["📂 سرویس‌های من", "👤 حساب من"],
     ["💰 شارژ کیف پول", "📞 پشتیبانی"],
-    ["🔗 لینک رفرال", "📚 آموزش اتصال"],  # اضافه کردن دکمه آموزش اتصال
 ]
+if referral_enabled():  # ❗️دکمهٔ رفرال فقط وقتی سیستم رفرال فعال است نمایش داده می‌شود
+    MAIN_MENU_KEYBOARD.append(["🔗 لینک رفرال", "📚 آموزش اتصال"])
+else:
+    MAIN_MENU_KEYBOARD.append(["📚 آموزش اتصال"])
 MAIN_MENU_REPLY_MARKUP = ReplyKeyboardMarkup(MAIN_MENU_KEYBOARD, resize_keyboard=True)
 
 # ============================================================
@@ -151,9 +169,11 @@ UNLIMITED_PRICE_PER_USER = 400000      # سرویس بی‌نهایت: هر کا
 VOLUME_PRICE_PER_GB = 2000             # سرویس حجمی: هر گیگ ۲ هزار تومان
 VOLUME_MAX_GB = 100                    # حداکثر حجم قابل خرید
 CUSTOM_MAX_USERS = 10                  # حداکثر کاربر (بر اساس IP)
-CUSTOM_USER_MULTIPLIER = 1.5           # ضریب تصاعدی قیمت برای هر کاربر اضافه
+CUSTOM_USER_MULTIPLIER = 1.3           # ضریب تصاعدی قیمت برای هر کاربر اضافه
 CUSTOM_DAYS = 30                       # اعتبار سرویس سفارشی
 MAX_SUBSCRIPTION_DAYS = 30              # سقف اعتبار هر سرویس پس از هر تمدید (۳۰ روز)
+MAX_PURCHASE_DAYS = 365                 # سقف اعتبار خرید چندماهه (یک سال)
+PURCHASE_MONTH_OPTIONS = (1, 2, 3, 6, 12)   # بازه‌های زمانی قابل انتخاب در خرید (ماه)
 STATE_CUSTOM_BUILD = 15                # وضعیت ساخت سرویس سفارشی
 CUSTOM_PLANS = {}                      # پلن‌های سفارشی ساخته‌شده در همین اجرا
 
@@ -671,10 +691,11 @@ async def send_service_purchase_log_to_admins(context: ContextTypes.DEFAULT_TYPE
         message += f"💳 **موجودی کاربر:** {old_balance:,.0f} تومان\n"
     
     # اطلاعات رفرال
-    referral_info = get_user_referral_info(user_id)
-    referral_by = referral_info.get("referral_by")
-    if referral_by:
-        message += f"🔗 **رفرال دهنده:** {format_user_info(referral_by, show_copyable=False)}\n"
+    if referral_enabled():
+        referral_info = get_user_referral_info(user_id)
+        referral_by = referral_info.get("referral_by")
+        if referral_by:
+            message += f"🔗 **رفرال دهنده:** {format_user_info(referral_by, show_copyable=False)}\n"
     
     # اطلاعات سرویس‌های قبلی کاربر
     services = get_user_services(user_id)
@@ -1324,15 +1345,19 @@ async def edit_user_info_start(update: Update, context: ContextTypes.DEFAULT_TYP
     
     message_text = f"✏️ **ویرایش اطلاعات کاربر**\n\n👤 کاربر: {format_user_info(target_user_id)}\n\n"
     message_text += f"💰 موجودی فعلی: {user_data.get('balance', 0):,.0f} تومان\n"
-    message_text += f"🔗 رفرال دهنده: {user_data.get('referral_by', 'ندارد')}\n"
+    if referral_enabled():
+        message_text += f"🔗 رفرال دهنده: {user_data.get('referral_by', 'ندارد')}\n"
     message_text += f"📝 یادداشت: {user_data.get('notes', 'ندارد')}\n\n"
     message_text += "لطفاً گزینه مورد نظر برای ویرایش را انتخاب کنید:"
     
     keyboard = [
         [InlineKeyboardButton("💰 ویرایش موجودی", callback_data=f"edit_balance_{target_user_id}")],
-        [InlineKeyboardButton("🔗 ویرایش رفرال دهنده", callback_data=f"edit_referral_{target_user_id}")],
+    ]
+    if referral_enabled():
+        keyboard.append([InlineKeyboardButton("🔗 ویرایش رفرال دهنده", callback_data=f"edit_referral_{target_user_id}")])
+    keyboard += [
         [InlineKeyboardButton("📝 ویرایش یادداشت", callback_data=f"edit_notes_{target_user_id}")],
-        [InlineKeyboardButton("🔙 بازگشت به پروفایل", callback_data=f"refresh_profile_{target_user_id}")]
+        [InlineKeyboardButton("🔙 بازگشت به پروفایل", callback_data=f"refresh_profile_{target_user_id}")],
     ]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1703,17 +1728,18 @@ async def investigate_user_info(update: Update, context: ContextTypes.DEFAULT_TY
     message_text += f"📝 یادداشت: {notes}\n\n"
     
     # اطلاعات رفرال
-    referral_by = user_data.get("referral_by")
-    referral_earnings = user_data.get("referral_earnings", 0.0)
-    referrals_count = user_data.get("referrals_count", 0)
-    
-    message_text += f"🔗 **اطلاعات رفرال:**\n"
-    if referral_by:
-        message_text += f"• رفرال دهنده: {format_user_info(referral_by, show_copyable=False)}\n"
-    else:
-        message_text += f"• رفرال دهنده: ندارد\n"
-    message_text += f"• کاربران جذب شده: {referrals_count} نفر\n"
-    message_text += f"• درآمد رفرال: {referral_earnings:,.0f} تومان\n\n"
+    if referral_enabled():
+        referral_by = user_data.get("referral_by")
+        referral_earnings = user_data.get("referral_earnings", 0.0)
+        referrals_count = user_data.get("referrals_count", 0)
+
+        message_text += f"🔗 **اطلاعات رفرال:**\n"
+        if referral_by:
+            message_text += f"• رفرال دهنده: {format_user_info(referral_by, show_copyable=False)}\n"
+        else:
+            message_text += f"• رفرال دهنده: ندارد\n"
+        message_text += f"• کاربران جذب شده: {referrals_count} نفر\n"
+        message_text += f"• درآمد رفرال: {referral_earnings:,.0f} تومان\n\n"
     
     # اطلاعات سرویس‌ها
     services = user_data.get("services", [])
@@ -1765,9 +1791,12 @@ async def investigate_user_info(update: Update, context: ContextTypes.DEFAULT_TY
     keyboard = [
         [InlineKeyboardButton("📊 تاریخچه تراکنش‌ها", callback_data=f"transaction_details_{target_user_id}_1")],
         [InlineKeyboardButton("📂 جزئیات سرویس‌ها", callback_data=f"service_details_{target_user_id}_1")],
-        [InlineKeyboardButton("📋 لیست کامل رفرال‌ها", callback_data=f"full_referral_list_{target_user_id}_1")],
+    ]
+    if referral_enabled():
+        keyboard.append([InlineKeyboardButton("📋 لیست کامل رفرال‌ها", callback_data=f"full_referral_list_{target_user_id}_1")])
+    keyboard += [
         [InlineKeyboardButton("✏️ ویرایش اطلاعات", callback_data=f"edit_user_{target_user_id}")],
-        [InlineKeyboardButton("🔙 بازگشت به پروفایل", callback_data=f"refresh_profile_{target_user_id}")]
+        [InlineKeyboardButton("🔙 بازگشت به پروفایل", callback_data=f"refresh_profile_{target_user_id}")],
     ]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -3050,7 +3079,7 @@ async def xui_get_client_info_by_name(server_key: str, config_name: str) -> tupl
         if client.get('email') == config_name:
             return index, client
 
-    logger.warning(f"3x-ui client {config_name} not found on {server_key}")
+    logger.info(f"3x-ui client {config_name} not found on {server_key}")
     return None, None
 
 # ============================================================
@@ -3114,6 +3143,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     # بررسی پارامترهای لینک برای رفرال
     args = context.args
+    if not referral_enabled():
+        args = []
     referral_id = None
     
     if args and len(args) > 0:
@@ -3149,19 +3180,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         # ارسال اطلاع به ادمین‌ها
         join_date = datetime.datetime.now().strftime("%Y/%m/%d - %H:%M:%S")
-        referral_info = ""
-        if referral_id:
-            referral_info = f"✅ توسط {format_user_info(referral_id, show_copyable=False)}"
-        else:
-            referral_info = "❌ ندارد"
-        
         admin_message = (
             f"👤 کاربر جدید وارد ربات شد!\n\n"
             f"🆔 شناسه کاربر: {format_user_info(user_id)}\n"
             f"👤 نام: {user.first_name} {user.last_name or ''}\n"
-            f"📅 تاریخ عضویت: {join_date}\n"
-            f"🔗 رفرال: {referral_info}"
+            f"📅 تاریخ عضویت: {join_date}"
         )
+        if referral_enabled():
+            referral_info = ""
+            if referral_id:
+                referral_info = f"✅ توسط {format_user_info(referral_id, show_copyable=False)}"
+            else:
+                referral_info = "❌ ندارد"
+            admin_message += f"\n🔗 رفرال: {referral_info}"
         
         for admin_id in ADMIN_CHAT_IDS:
             try:
@@ -3173,7 +3204,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     welcome_message = f"سلام {user.first_name}،\nلطفاً یک گزینه را از منوی زیر انتخاب کنید:"
     
     # اگر کاربر توسط رفرال آمده، پیام اضافی
-    if referral_id:
+    if referral_enabled() and referral_id:
         welcome_message += f"\n\n✅ شما توسط {format_user_info(referral_id, show_copyable=False)} به ربات دعوت شده‌اید!"
     
     await update.message.reply_text(
@@ -3219,33 +3250,38 @@ async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user_id = update.effective_user.id
     balance = get_user_balance(user_id)
     num_services = len(get_user_services(user_id))
-    bonus_info = get_referral_bonus_info(user_id)
-    
-    # دریافت اطلاعات رفرال
-    referral_info = get_user_referral_info(user_id)
-    referral_by = referral_info.get("referral_by")
-    referral_earnings = referral_info.get("referral_earnings", 0.0)
-    referrals_count = referral_info.get("referrals_count", 0)
-    
+    bonus_info = get_referral_bonus_info(user_id) if referral_enabled() else None
+
+    # اطلاعات رفرال (فقط در حالت فعال بودن سیستم رفرال)
+    if referral_enabled():
+        referral_info = get_user_referral_info(user_id)
+        referral_by = referral_info.get("referral_by")
+        referral_earnings = referral_info.get("referral_earnings", 0.0)
+        referrals_count = referral_info.get("referrals_count", 0)
+
     message_text = (
         f"**👤 جزئیات حساب کاربری**\n\n"
         f"🔹 **شناسه کاربری (ID):** {format_user_info(user_id)}\n"
         f"🔹 **موجودی کیف پول:** **{balance:,.0f}** تومان\n"
         f"🔹 **تعداد سرویس فعال:** **{num_services}** عدد\n"
     )
-    
-    # اضافه کردن اطلاعات رفرال
-    if referral_by:
-        message_text += f"🔹 **رفرال دهنده:** {format_user_info(referral_by, show_copyable=False)}\n"
-    
-    message_text += (
-        f"🔹 **تعداد کاربران رفرال:** **{referrals_count}** نفر\n"
-        f"🔹 **درآمد رفرال:** **{referral_earnings:,.0f}** تومان\n"
-        f"🔹 **هدیهٔ آمادهٔ دریافت:** **{bonus_info['available']}** عدد ({bonus_info['available'] * REFERRAL_BONUS_GB} گیگ)\n\n"
-        f"**نکته:** برای شارژ، از دکمه «💰 شارژ کیف پول» در منوی اصلی استفاده کنید.\n"
-        f"برای دریافت لینک رفرال خود، روی دکمه «🔗 لینک رفرال» کلیک کنید."
-    )
-    
+
+    if referral_enabled():
+        # اضافه کردن اطلاعات رفرال
+        if referral_by:
+            message_text += f"🔹 **رفرال دهنده:** {format_user_info(referral_by, show_copyable=False)}\n"
+        message_text += (
+            f"🔹 **تعداد کاربران رفرال:** **{referrals_count}** نفر\n"
+            f"🔹 **درآمد رفرال:** **{referral_earnings:,.0f}** تومان\n"
+            f"🔹 **هدیهٔ آمادهٔ دریافت:** **{bonus_info['available']}** عدد ({bonus_info['available'] * REFERRAL_BONUS_GB} گیگ)\n\n"
+            f"**نکته:** برای شارژ، از دکمه «💰 شارژ کیف پول» در منوی اصلی استفاده کنید.\n"
+            f"برای دریافت لینک رفرال خود، روی دکمه «🔗 لینک رفرال» کلیک کنید."
+        )
+    else:
+        message_text += (
+            f"\n**نکته:** برای شارژ، از دکمه «💰 شارژ کیف پول» در منوی اصلی استفاده کنید."
+        )
+
     await update.message.reply_text(
         message_text,
         parse_mode="Markdown",
@@ -3315,6 +3351,9 @@ def build_referral_page(user_id: int, bot_username: str) -> tuple[str, InlineKey
 
 async def my_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """نمایش لینک رفرال کاربر"""
+    if not referral_enabled():
+        await update.message.reply_text("این بخش در حال حاضر غیرفعال است.", reply_markup=MAIN_MENU_REPLY_MARKUP)
+        return
     user_id = update.effective_user.id
     bot_username = (await context.bot.get_me()).username
     message_text, reply_markup = build_referral_page(user_id, bot_username)
@@ -3808,17 +3847,18 @@ async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         message_text += f"📝 **یادداشت:** {notes}\n"
     
     # اطلاعات رفرال
-    referral_by = user_data.get("referral_by")
-    referral_earnings = user_data.get("referral_earnings", 0.0)
-    referrals_count = user_data.get("referrals_count", 0)
-    
-    if referral_by:
-        message_text += f"🔗 **رفرال دهنده:** {format_user_info(referral_by, show_copyable=False)}\n"
-    else:
-        message_text += f"🔗 **رفرال دهنده:** ندارد\n"
-    
-    message_text += f"👥 **کاربران جذب شده:** {referrals_count} نفر\n"
-    message_text += f"💵 **درآمد رفرال:** {referral_earnings:,.0f} تومان\n"
+    if referral_enabled():
+        referral_by = user_data.get("referral_by")
+        referral_earnings = user_data.get("referral_earnings", 0.0)
+        referrals_count = user_data.get("referrals_count", 0)
+
+        if referral_by:
+            message_text += f"🔗 **رفرال دهنده:** {format_user_info(referral_by, show_copyable=False)}\n"
+        else:
+            message_text += f"🔗 **رفرال دهنده:** ندارد\n"
+
+        message_text += f"👥 **کاربران جذب شده:** {referrals_count} نفر\n"
+        message_text += f"💵 **درآمد رفرال:** {referral_earnings:,.0f} تومان\n"
     
     # اطلاعات سرویس‌ها
     services = user_data.get("services", [])
@@ -3847,25 +3887,26 @@ async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if len(services) > 5:
             message_text += f"\nو {len(services) - 5} سرویس دیگر...\n"
     
-    # بررسی تاریخچه رفرال‌های جذب شده (آخرین 5 نفر)
-    referral_history = get_referral_history(target_user_id)
-    if referral_history:
-        message_text += f"\n**👥 کاربران جذب شده (آخرین ۵ نفر):**\n"
-        for i, referral in enumerate(referral_history[-5:], 1):
-            ref_user_id = referral.get('user_id')
-            ref_date = datetime.datetime.fromisoformat(referral.get('date')).strftime("%Y/%m/%d")
-            message_text += f"{i}. {format_user_info(ref_user_id, show_copyable=False)} - {ref_date}\n"
-        
-        if len(referral_history) > 5:
-            message_text += f"... و {len(referral_history) - 5} نفر دیگر\n"
-    
-    # بررسی تاریخچه درآمدهای رفرال
-    earnings_history = get_referral_earnings_history(target_user_id)
-    if earnings_history:
-        total_earnings = sum(item['amount'] for item in earnings_history)
-        message_text += f"\n**💰 تاریخچه درآمد رفرال:**\n"
-        message_text += f"مجموع درآمد: **{total_earnings:,.0f}** تومان\n"
-        message_text += f"تعداد تراکنش: {len(earnings_history)} عدد\n"
+    if referral_enabled():
+        # بررسی تاریخچه رفرال‌های جذب شده (آخرین 5 نفر)
+        referral_history = get_referral_history(target_user_id)
+        if referral_history:
+            message_text += f"\n**👥 کاربران جذب شده (آخرین ۵ نفر):**\n"
+            for i, referral in enumerate(referral_history[-5:], 1):
+                ref_user_id = referral.get('user_id')
+                ref_date = datetime.datetime.fromisoformat(referral.get('date')).strftime("%Y/%m/%d")
+                message_text += f"{i}. {format_user_info(ref_user_id, show_copyable=False)} - {ref_date}\n"
+
+            if len(referral_history) > 5:
+                message_text += f"... و {len(referral_history) - 5} نفر دیگر\n"
+
+        # بررسی تاریخچه درآمدهای رفرال
+        earnings_history = get_referral_earnings_history(target_user_id)
+        if earnings_history:
+            total_earnings = sum(item['amount'] for item in earnings_history)
+            message_text += f"\n**💰 تاریخچه درآمد رفرال:**\n"
+            message_text += f"مجموع درآمد: **{total_earnings:,.0f}** تومان\n"
+            message_text += f"تعداد تراکنش: {len(earnings_history)} عدد\n"
     
     # اطلاعات تست رایگان
     if has_user_used_free_trial(target_user_id):
@@ -3895,7 +3936,6 @@ async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             InlineKeyboardButton("✏️ ویرایش اطلاعات", callback_data=f"edit_user_{target_user_id}")
         ],
         [
-            InlineKeyboardButton("📋 لیست کامل رفرال‌ها", callback_data=f"full_referral_list_{target_user_id}_1"),
             InlineKeyboardButton("📋 کپی ID کاربر", callback_data=f"copy_user_id_{target_user_id}")
         ],
         [
@@ -3903,6 +3943,8 @@ async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             InlineKeyboardButton("🔙 بستن", callback_data="close_profile")
         ]
     ]
+    if referral_enabled():
+        keyboard.insert(3, [InlineKeyboardButton("📋 لیست کامل رفرال‌ها", callback_data=f"full_referral_list_{target_user_id}_1")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     if update.message:
@@ -4067,16 +4109,80 @@ async def select_service_plan(update: Update, context: ContextTypes.DEFAULT_TYPE
     return STATE_SELECT_SERVER
 
 # ---------------------------
+# انتخاب مدت زمان سرویس (چند ماه)
+# ---------------------------
+def purchase_total_days(base_days, months) -> int:
+    """روزهای نهایی یک خرید چندماهه (با سقف یک‌ساله)"""
+    return min(int(base_days or 30) * max(1, int(months or 1)), MAX_PURCHASE_DAYS)
+
+
+def plan_months_keyboard(internal_key: str, panel_info: dict) -> InlineKeyboardMarkup:
+    """دکمه‌های انتخاب مدت سرویس با نمایش روزها و قیمت هر گزینه"""
+    base_price = int(panel_info.get('price_toman') or 0)
+    base_days = int(panel_info.get('days') or 30)
+    rows, row = [], []
+    for months in PURCHASE_MONTH_OPTIONS:
+        price = base_price * months
+        days = purchase_total_days(base_days, months)
+        price_text = f"{price:,} تومان" if price > 0 else "رایگان"
+        row.append(InlineKeyboardButton(
+            f"🗓️ {months} ماه ({days} روز) - {price_text}",
+            callback_data=f"PLAN_MONTHS_{internal_key}_{months}",
+        ))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+
+async def select_plan_months(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """نمایش انتخاب مدت سرویس بعد از انتخاب پلن (قبل از نام کانفیگ)"""
+    query = update.callback_query
+    internal_key = query.data.split('SERVICE_DETAILS_PLAN_')[-1]
+    panel_info = SERVICES.get(internal_key)
+    if not panel_info:
+        await query.answer("پلن پیدا نشد.", show_alert=True)
+        return STATE_SELECT_SERVER
+    await query.answer()
+    text = (
+        f"⏳ <b>{html.escape(str(panel_info['label']))}</b>\n\n"
+        f"حجم: {html.escape(str(panel_info['volume']))}\n"
+        "سرویس را برای چند ماه می‌خواهید؟ مدت مورد نظر را انتخاب کنید:"
+    )
+    markup = plan_months_keyboard(internal_key, panel_info)
+    try:
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+    except Exception:
+        await context.bot.send_message(query.from_user.id, text, parse_mode="HTML", reply_markup=markup)
+    context.user_data['in_conversation'] = True
+    return STATE_SELECT_SERVER
+
+
+# ---------------------------
 # FIXED prompt_for_config_name
 # ---------------------------
 async def prompt_for_config_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """درخواست نام کانفیگ قبل از خرید (نسخه اصلاح‌شده: ویرایش پیام inline با InlineKeyboard و ارسال ReplyKeyboard به‌صورت پیام جدا)"""
+    """درخواست مدت سرویس و سپس نام کانفیگ قبل از خرید"""
     query = update.callback_query
+
+    # برای پلن‌های پولی اول مدت زمان (چند ماه) انتخاب می‌شود
+    if query.data.startswith('SERVICE_DETAILS_PLAN_'):
+        plan_key = query.data.split('SERVICE_DETAILS_PLAN_')[-1]
+        if plan_key != 'FREE_TRIAL' and plan_key in SERVICES:
+            return await select_plan_months(update, context)
+
     await query.answer("در حال بارگذاری...")
-    
+
+    months = 1
     try:
         # Support both SERVICE_DETAILS_PLAN_ and CONFIRM_PLAN_PURCHASE_ entry points
-        if query.data.startswith('CONFIRM_PURCHASE_') or query.data.startswith('CONFIRM_PLAN_PURCHASE_'):
+        if query.data.startswith('PLAN_MONTHS_'):
+            payload = query.data[len('PLAN_MONTHS_'):]
+            internal_key, months_text = payload.rsplit('_', 1)
+            months = max(1, int(months_text))
+        elif query.data.startswith('CONFIRM_PURCHASE_') or query.data.startswith('CONFIRM_PLAN_PURCHASE_'):
             # some flows use CONFIRM_PLAN_PURCHASE_ (from previous versions)
             if 'CONFIRM_PLAN_PURCHASE_' in query.data:
                 internal_key = query.data.split('CONFIRM_PLAN_PURCHASE_')[1]
@@ -4090,7 +4196,8 @@ async def prompt_for_config_name(update: Update, context: ContextTypes.DEFAULT_T
         panel_info = SERVICES.get(internal_key)
         if not panel_info:
             raise ValueError("Invalid plan key")
-        price_toman = panel_info['price_toman']
+        base_price = int(panel_info.get('price_toman') or 0)
+        price_toman = base_price * months
     except Exception as e:
         logger.error(f"Failed to unpack plan data in prompt_for_config_name: {query.data} Error: {e}")
         # Edit inline message (use InlineKeyboardMarkup or none)
@@ -4154,7 +4261,9 @@ async def prompt_for_config_name(update: Update, context: ContextTypes.DEFAULT_T
     # store purchase data
     context.user_data['purchase_data'] = {
         'internal_key': internal_key,
-        'price_toman': price_toman
+        'price_toman': price_toman,
+        'base_price': base_price,
+        'months': months,
     }
 
     # remove previous inline message
@@ -4209,8 +4318,10 @@ async def receive_config_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     purchase_data = context.user_data['purchase_data']
     internal_key = purchase_data['internal_key']
     price_toman = purchase_data['price_toman']
+    months = max(1, int(purchase_data.get('months') or 1))
     server_name = context.user_data.get('server_display_name', 'Server')
     panel_info = get_plan_info(internal_key, context)
+    total_days = purchase_total_days(panel_info.get('days'), months)
     
     price_text = f"{price_toman:,.0f} تومان" if price_toman > 0 else "رایگان"
     
@@ -4219,7 +4330,7 @@ async def receive_config_name(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"سرور: {server_name}\n"
         f"سرویس انتخابی: {panel_info['label']}\n"
         f"حجم: {panel_info['volume']}\n"
-        f"اعتبار: {panel_info['days']} روز\n"
+        f"اعتبار: {total_days} روز ({months} ماه)\n"
         f"تعداد کاربر مجاز: {panel_info['users']} نفر\n"
         f"نام کانفیگ: {user_input}\n\n"
         f"هزینه: {price_text}\n\n"
@@ -4264,11 +4375,12 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         internal_key = purchase_data['internal_key']
         price_toman = purchase_data['price_toman']
-        
+        months = max(1, int(purchase_data.get('months') or 1))
+
         panel_info = get_plan_info(internal_key, context)
         volume_gb = (int(panel_info['volume_gb']) if 'volume_gb' in panel_info
                      else int(panel_info['volume'].split(' ')[0]))
-        days = min(int(panel_info['days']), MAX_SUBSCRIPTION_DAYS)
+        days = purchase_total_days(panel_info['days'], months)
         limit_ip = panel_info['users']
     except Exception as e:
         logger.error(f"Failed to retrieve purchase data in finalize_purchase: {e}")
@@ -4311,7 +4423,7 @@ async def finalize_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if price_toman > 0:
         new_balance = update_user_balance(user_id, -price_toman)
         # افزودن تراکنش خرید به تاریخچه
-        add_transaction(user_id, "purchase", price_toman, f"خرید سرویس {panel_info['label']} - {config_name}")
+        add_transaction(user_id, "purchase", price_toman, f"خرید سرویس {panel_info['label']} ({months} ماه) - {config_name}")
     else:
         new_balance = get_user_balance(user_id)
         # افزودن تراکنش تست رایگان به تاریخچه
@@ -5273,7 +5385,7 @@ async def approve_receipt_callback(update: Update, context: ContextTypes.DEFAULT
     referral_earning = 0.0
     referral_by = None
     
-    if amount_toman >= REFERRAL_MIN_AMOUNT:
+    if referral_enabled() and amount_toman >= REFERRAL_MIN_AMOUNT:
         referral_earning, referral_by = add_referral_earning(user_id, amount_toman)
     
     # ساخت پیام جدید برای ادمین‌ها
@@ -5833,8 +5945,17 @@ async def back_to_main_from_tutorial(update: Update, context: ContextTypes.DEFAU
 async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """هندلر جامع برای دکمه‌های شیشه‌ای (غیر از مکالمات)"""
     query = update.callback_query
-    await query.answer()
     data = query.data
+
+    # وقتی سیستم رفرال غیرفعال است، هیچ بخشی از آن (حتی با دکمهٔ قدیمی) باز نمی‌شود
+    if not referral_enabled() and data.startswith((
+        "REFERRAL_", "back_to_referral_link", "full_referral_list_", "referral_earnings_history_",
+        "referral_page_info", "earnings_page_info", "export_referrals_", "edit_referral_",
+    )):
+        await query.answer("این بخش در حال حاضر غیرفعال است.", show_alert=True)
+        return
+
+    await query.answer()
     
     # هندلرهای اصلی
     if data == "OPEN_MY_SERVICES" or data == "back_to_services":
@@ -6299,7 +6420,7 @@ async def contact_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE,
 def custom_plan_price(mode: str, volume_gb: int, users: int) -> int:
     """قیمت سرویس سفارشی
     بی‌نهایت: ۴۰۰٬۰۰۰ تومان به ازای هر کاربر
-    حجمی: حجم × ۲٬۰۰۰ تومان و برای هر کاربر اضافه ضریب ۱.۵ تصاعدی"""
+    حجمی: حجم × ۲٬۰۰۰ تومان و برای هر کاربر اضافه ضریب ۱.۳ تصاعدی"""
     if mode == 'unlimited':
         return UNLIMITED_PRICE_PER_USER * users
     return int(round(volume_gb * VOLUME_PRICE_PER_GB * (CUSTOM_USER_MULTIPLIER ** (users - 1))))
@@ -6321,11 +6442,26 @@ def get_plan_info(internal_key: str, context=None):
     return SERVICES.get(internal_key) or CUSTOM_PLANS.get(internal_key)
 
 
+def custom_month_rows(selected_months: int) -> list:
+    """ردیف دکمه‌های انتخاب مدت (ماه) برای خرید سفارشی"""
+    rows, row = [], []
+    for months in PURCHASE_MONTH_OPTIONS:
+        mark = "✅ " if months == selected_months else ""
+        row.append(InlineKeyboardButton(f"{mark}{months} ماه", callback_data=f"CUSTOM_MONTH_{months}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return rows
+
+
 def _custom_selection(context):
     sel = context.user_data.get('custom_buy')
     if not sel:
-        sel = {'mode': 'volume', 'volume_gb': 10, 'users': 1}
+        sel = {'mode': 'volume', 'volume_gb': 10, 'users': 1, 'months': 1}
         context.user_data['custom_buy'] = sel
+    sel.setdefault('months', 1)
     return sel
 
 
@@ -6335,7 +6471,8 @@ async def _render_custom_buy(update: Update, context: ContextTypes.DEFAULT_TYPE)
     mode = sel['mode']
     users = sel['users']
     volume_gb = sel['volume_gb']
-    price = custom_plan_price(mode, volume_gb, users)
+    months = max(1, int(sel.get('months') or 1))
+    price = custom_plan_price(mode, volume_gb, users) * months
 
     if mode == 'unlimited':
         title = "♾️ سرویس بی‌نهایت"
@@ -6360,12 +6497,12 @@ async def _render_custom_buy(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"{body}"
         f"کاربران (بر اساس IP): {users} از {CUSTOM_MAX_USERS}\n"
         f"{custom_slider_bar(users, CUSTOM_MAX_USERS)}\n"
-        f"⏳ اعتبار: {CUSTOM_DAYS} روز\n\n"
+        f"⏳ مدت: {months} ماه ({purchase_total_days(CUSTOM_DAYS, months)} روز)\n\n"
         f"💰 قیمت نهایی: {price:,} تومان\n"
         f"{price_hint}"
     )
 
-    keyboard = volume_rows + [
+    keyboard = volume_rows + custom_month_rows(months) + [
         [InlineKeyboardButton("👥 ۱-", callback_data="CUSTOM_ADJ_USR_-1"),
          InlineKeyboardButton("👥 ۱+", callback_data="CUSTOM_ADJ_USR_1")],
         [InlineKeyboardButton("✅ تایید و خرید", callback_data="CUSTOM_CONFIRM")],
@@ -6384,7 +6521,7 @@ async def custom_buy_open(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     await query.answer("در حال باز کردن خرید سفارشی...")
     mode = 'unlimited' if query.data.endswith('UNLIMITED') else 'volume'
-    context.user_data['custom_buy'] = {'mode': mode, 'volume_gb': 10, 'users': 1}
+    context.user_data['custom_buy'] = {'mode': mode, 'volume_gb': 10, 'users': 1, 'months': 1}
     context.user_data['in_conversation'] = True
     await _render_custom_buy(update, context)
     return STATE_CUSTOM_BUILD
@@ -6411,6 +6548,21 @@ async def custom_buy_adjust(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return STATE_CUSTOM_BUILD
 
 
+async def custom_buy_months(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """انتخاب مدت سرویس سفارشی (چند ماه)"""
+    query = update.callback_query
+    try:
+        months = int(query.data.split('CUSTOM_MONTH_')[-1])
+    except (TypeError, ValueError):
+        await query.answer()
+        return STATE_CUSTOM_BUILD
+    sel = _custom_selection(context)
+    sel['months'] = max(1, months)
+    await query.answer()
+    await _render_custom_buy(update, context)
+    return STATE_CUSTOM_BUILD
+
+
 async def custom_buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """ثبت پلن سفارشی و رفتن به مرحله نام کانفیگ"""
     query = update.callback_query
@@ -6420,8 +6572,10 @@ async def custom_buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
     sel = _custom_selection(context)
     mode = sel['mode']
     users = sel['users']
+    months = max(1, int(sel.get('months') or 1))
     volume_gb = sel['volume_gb'] if mode == 'volume' else 0
-    price = custom_plan_price(mode, volume_gb, users)
+    base_price = custom_plan_price(mode, volume_gb, users)
+    price = base_price * months
 
     balance = get_user_balance(user_id)
     if balance < price:
@@ -6439,11 +6593,11 @@ async def custom_buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
 
     if mode == 'unlimited':
-        label = f"♾️ بی‌نهایت ({users} کاربر)"
+        label = f"♾️ بی‌نهایت ({users} کاربر - {months} ماه)"
         volume_text = "نامحدود"
         volume_number = 0
     else:
-        label = f"📦 حجمی {volume_gb} گیگ ({users} کاربر)"
+        label = f"📦 حجمی {volume_gb} گیگ ({users} کاربر - {months} ماه)"
         volume_text = f"{volume_gb} گیگ"
         volume_number = volume_gb
 
@@ -6462,6 +6616,8 @@ async def custom_buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['purchase_data'] = {
         'internal_key': internal_key,
         'price_toman': price,
+        'base_price': base_price,
+        'months': months,
         'plan_info': plan_info,
     }
     context.user_data.pop('custom_buy', None)
@@ -6547,6 +6703,341 @@ async def track_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.debug(f"profile tracking failed: {exc}")
 
 
+# ============================================================
+# --- یادآوری خودکار پایان اعتبار و اتمام حجم سرویس‌ها ---
+# ============================================================
+
+SERVICE_REMINDER_INTERVAL = 3600        # هر یک ساعت سرویس‌های سررسیده بررسی می‌شوند
+SERVICE_REMINDER_FIRST_DELAY = 90       # اولین بررسی بعد از بالا آمدن ربات
+SERVICE_DAY_THRESHOLDS = (10, 5, 3, 1)  # روزهای باقی‌مانده که باید هشدار داده شود
+SERVICE_GB_THRESHOLDS = (3, 1)          # گیگابایت باقی‌مانده که باید هشدار داده شود
+SERVICE_NEAR_CHECK_INTERVAL = 24 * 3600  # داخل پنجرهٔ هشدار روزی یک‌بار کافی است
+SERVICE_MAX_CHECK_INTERVAL = 24 * 3600   # سقف فاصلهٔ بررسی هر سرویس
+SERVICE_SCHEDULE_KEY = "svc_reminder_next"  # زمان بررسی بعدی همهٔ سرویس‌ها (یک رکورد)
+_ONE_GB = 1024 ** 3
+_ONE_DAY_MS = 86_400_000
+
+
+def _reminder_state_key(user_id: int, config_name: str) -> str:
+    return f"svc_reminder:{user_id}:{config_name}"
+
+
+def load_reminder_state(user_id: int, config_name: str) -> dict:
+    """وضعیت یادآوری‌های ارسال‌شده برای یک سرویس"""
+    state = storage.get_kv(_reminder_state_key(user_id, config_name), {}) or {}
+    if not isinstance(state, dict):
+        state = {}
+    state.setdefault('expiry', 0)
+    state.setdefault('total', 0)
+    state.setdefault('days', [])
+    state.setdefault('gb', [])
+    state['days'] = [int(x) for x in (state.get('days') or [])]
+    state['gb'] = [int(x) for x in (state.get('gb') or [])]
+    return state
+
+
+def save_reminder_state(user_id: int, config_name: str, state: dict) -> None:
+    storage.set_kv(_reminder_state_key(user_id, config_name), state)
+
+
+def _fmt_expiry_date(expiry_ms: int) -> str:
+    try:
+        return datetime.datetime.fromtimestamp(int(expiry_ms) / 1000).strftime("%Y/%m/%d - %H:%M")
+    except (TypeError, ValueError, OSError):
+        return "نامحدود"
+
+
+def build_expiry_reminder_text(config_name, days_left, remaining_text, expiry_text) -> str:
+    """متن زیبای یادآوری پایان اعتبار سرویس"""
+    name = html.escape(str(config_name))
+    if days_left <= 0:
+        title = "⛔️ <b>اعتبار سرویس شما به پایان رسید</b>"
+        body = f"اعتبار سرویس <b>{name}</b> به پایان رسیده است و اتصال آن قطع می‌شود."
+    elif days_left == 1:
+        title = "⏳ <b>آخرین روز اعتبار سرویس شما</b>"
+        body = f"تنها <b>۱ روز</b> از اعتبار سرویس <b>{name}</b> باقی مانده است."
+    else:
+        title = "⏳ <b>یادآوری پایان اعتبار سرویس</b>"
+        body = f"از اعتبار سرویس <b>{name}</b> تنها <b>{days_left} روز</b> باقی مانده است."
+    return (
+        f"{title}\n\n"
+        f"سلام 👋\n"
+        f"{body}\n\n"
+        f"📅 تاریخ انقضا: <b>{expiry_text}</b>\n"
+        f"🔋 حجم باقی‌مانده: <b>{html.escape(str(remaining_text))}</b>\n\n"
+        f"برای اینکه اتصال شما ناگهانی قطع نشود، همین حالا سرویس را تمدید کنید."
+    )
+
+
+def build_volume_reminder_text(config_name, threshold, remaining_text, remaining_bytes, expiry_text) -> str:
+    """متن زیبای یادآوری اتمام حجم سرویس"""
+    name = html.escape(str(config_name))
+    if remaining_bytes <= 0:
+        title = "📦 <b>حجم سرویس شما به پایان رسید</b>"
+        body = f"حجم سرویس <b>{name}</b> تمام شده است و اتصال شما قطع می‌شود."
+    elif threshold <= 1:
+        title = "🚨 <b>حجم سرویس شما در آستانهٔ اتمام است</b>"
+        body = (f"از حجم سرویس <b>{name}</b> فقط <b>۱ گیگابایت</b> باقی مانده است "
+                f"(دقیقاً <b>{html.escape(str(remaining_text))}</b>).")
+    else:
+        title = "📉 <b>یادآوری مصرف حجم سرویس</b>"
+        body = (f"از حجم سرویس <b>{name}</b> فقط <b>{threshold} گیگابایت</b> باقی مانده است "
+                f"(دقیقاً <b>{html.escape(str(remaining_text))}</b>).")
+    return (
+        f"{title}\n\n"
+        f"سلام 👋\n"
+        f"{body}\n\n"
+        f"📅 تاریخ انقضا: <b>{expiry_text}</b>\n\n"
+        f"با اتمام حجم یا اعتبار، اتصال شما قطع می‌شود.\n"
+        f"برای ادامهٔ استفاده، سرویس را تمدید کنید یا حجم اضافه کنید."
+    )
+
+
+async def send_service_reminder(application, user_id: int, config_name: str, text: str) -> None:
+    """ارسال پیام یادآوری با دکمه‌های تمدید و سرویس‌ها"""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔁 تمدید و افزایش حجم", callback_data=f"PROMPT_RENEW_{config_name}")],
+        [InlineKeyboardButton("📂 سرویس‌های من", callback_data="back_to_services")],
+    ])
+    try:
+        await application.bot.send_message(user_id, text, parse_mode="HTML", reply_markup=keyboard)
+    except Exception as exc:
+        # کاربر ممکن است ربات را بلاک کرده باشد؛ نبود پیام نباید بقیه را متوقف کند
+        logger.info(f"Reminder message to {user_id} skipped: {exc}")
+
+
+def _client_stats_index(inbounds) -> dict:
+    """نقشهٔ email → وضعیت کلاینت از یک‌بار گرفتن لیست اینباندهای پنل"""
+    index = {}
+    for inbound in inbounds or []:
+        if not isinstance(inbound, dict):
+            continue
+        for stat in inbound.get('clientStats') or []:
+            if not isinstance(stat, dict) or not stat.get('email'):
+                continue
+            index[str(stat['email'])] = {
+                'expiryTime': stat.get('expiryTime'),
+                'totalGB': stat.get('total'),
+                'up': stat.get('up'),
+                'down': stat.get('down'),
+            }
+        # بعضی نسخه‌های پنل آمار مصرف را در لیست برنمی‌گردانند
+        settings = _xui_json_field(inbound.get('settings'), {})
+        for client in (settings.get('clients') or []):
+            if not isinstance(client, dict) or not client.get('email'):
+                continue
+            entry = index.setdefault(str(client['email']), {})
+            entry.setdefault('expiryTime', client.get('expiryTime'))
+            entry.setdefault('totalGB', client.get('totalGB'))
+    return index
+
+
+async def fetch_server_clients(server_key: str):
+    """وضعیت همهٔ کلاینت‌های یک سرور با یک درخواست به پنل"""
+    inbounds = await xui_get_inbounds(server_key)
+    if inbounds is None:
+        return None
+    return _client_stats_index(inbounds)
+
+
+def _next_reminder_at(state, now_ms, expiry_ms, total_bytes, remaining_bytes) -> int:
+    """زودترین زمانی که بررسی بعدی این سرویس واقعاً لازم است (میلی‌ثانیه)"""
+    gaps = []
+
+    pending_days = [t for t in SERVICE_DAY_THRESHOLDS if t not in state['days']]
+    if expiry_ms > 0 and pending_days:
+        threshold = max(pending_days)
+        window_start = expiry_ms - threshold * _ONE_DAY_MS
+        if window_start > now_ms:
+            gaps.append(window_start - now_ms + 60_000)   # کمی بعد از ورود به پنجرهٔ هشدار
+        else:
+            gaps.append(SERVICE_NEAR_CHECK_INTERVAL * 1000)
+
+    pending_gb = [t for t in SERVICE_GB_THRESHOLDS if t not in state['gb']]
+    if total_bytes > 0 and pending_gb:
+        target_bytes = max(pending_gb) * _ONE_GB
+        if remaining_bytes <= target_bytes:
+            gaps.append(SERVICE_NEAR_CHECK_INTERVAL * 1000)
+        else:
+            rate = float(state.get('rate') or 0)          # بایت در ساعت
+            if rate > 0:
+                hours = (remaining_bytes - target_bytes) / rate
+                gaps.append(max(3600, int(hours * 3600 * 0.8)) * 1000)
+            else:
+                gaps.append(SERVICE_NEAR_CHECK_INTERVAL * 1000)
+
+    if not gaps:
+        gaps.append(SERVICE_NEAR_CHECK_INTERVAL * 1000)
+    return now_ms + min(min(gaps), SERVICE_MAX_CHECK_INTERVAL * 1000)
+
+
+async def process_service_reminder(application, user_id: int, service: dict, client: dict, now_ms: int) -> int:
+    """بررسی یک سرویس و ارسال یادآوری‌های لازم؛ زمان بررسی بعدی را برمی‌گرداند"""
+    config_name = service.get('config_name')
+    try:
+        expiry_ms = int(client.get('expiryTime') or 0)
+    except (TypeError, ValueError):
+        expiry_ms = 0
+    try:
+        total_bytes = int(client.get('totalGB') or 0)
+    except (TypeError, ValueError):
+        total_bytes = 0
+
+    # اگر پنل آمار مصرف را برنگرداند، هشدار حجم قابل محاسبه نیست
+    traffic_known = client.get('up') is not None or client.get('down') is not None
+    used_bytes = 0
+    if traffic_known:
+        try:
+            used_bytes = int(client.get('up') or 0) + int(client.get('down') or 0)
+        except (TypeError, ValueError):
+            traffic_known = False
+
+    state = load_reminder_state(user_id, config_name)
+
+    # تمدید یا تغییر حجم، هشدارهای قبلی را باطل می‌کند
+    if state.get('expiry') != expiry_ms:
+        state['expiry'] = expiry_ms
+        state['days'] = []
+    if state.get('total') != total_bytes:
+        state['total'] = total_bytes
+        state['gb'] = []
+        state['rate'] = 0
+        state['checked_at'] = 0
+
+    expiry_text = _fmt_expiry_date(expiry_ms)
+    if traffic_known and total_bytes > 0:
+        remaining_bytes = max(0, total_bytes - used_bytes)
+    else:
+        remaining_bytes = total_bytes
+    remaining_text = convert_bytes_to_display(remaining_bytes) if total_bytes > 0 else "نامحدود"
+
+    # نرخ تقریبی مصرف (بایت در ساعت) تا لازم نباشد هر ساعت پنل را بپرسیم
+    try:
+        prev_at = int(state.get('checked_at') or 0)
+        prev_left = int(state.get('left') or 0)
+    except (TypeError, ValueError):
+        prev_at, prev_left = 0, 0
+    if traffic_known and prev_at and prev_at < now_ms and prev_left > remaining_bytes:
+        hours = (now_ms - prev_at) / 3_600_000
+        sample = (prev_left - remaining_bytes) / hours if hours > 0 else 0
+        old_rate = float(state.get('rate') or 0)
+        state['rate'] = sample if old_rate <= 0 else (old_rate + sample) / 2
+
+    messages = []
+    if expiry_ms > 0:
+        if expiry_ms <= now_ms:
+            days_left = 0
+        else:
+            days_left = (expiry_ms - now_ms + _ONE_DAY_MS - 1) // _ONE_DAY_MS
+        crossed = [t for t in SERVICE_DAY_THRESHOLDS if days_left <= t and t not in state['days']]
+        if crossed:
+            state['days'] = sorted(set(state['days']) | set(crossed))
+            messages.append(build_expiry_reminder_text(
+                config_name, days_left, remaining_text, expiry_text))
+
+    if traffic_known and total_bytes > 0:
+        remaining_gb = remaining_bytes / _ONE_GB
+        crossed = [t for t in SERVICE_GB_THRESHOLDS if remaining_gb <= t and t not in state['gb']]
+        if crossed:
+            threshold = min(crossed)
+            state['gb'] = sorted(set(state['gb']) | set(crossed))
+            messages.append(build_volume_reminder_text(
+                config_name, threshold, remaining_text, remaining_bytes, expiry_text))
+
+    for text in messages:
+        await send_service_reminder(application, user_id, config_name, text)
+
+    state['checked_at'] = now_ms
+    state['left'] = remaining_bytes
+    save_reminder_state(user_id, config_name, state)
+    return _next_reminder_at(
+        state, now_ms, expiry_ms,
+        total_bytes if traffic_known else 0, remaining_bytes)
+
+
+async def check_service_reminders(application) -> None:
+    """بررسی سرویس‌های سررسیده؛ برای هر سرور فقط یک درخواست به پنل"""
+    try:
+        users = storage.load_users()
+        schedule = storage.get_kv(SERVICE_SCHEDULE_KEY, {}) or {}
+    except Exception as exc:
+        logger.error(f"Reminder job could not load data: {exc}")
+        return
+    if not isinstance(schedule, dict):
+        schedule = {}
+
+    now_ms = int(time.time() * 1000)
+    due_by_server, new_schedule = {}, {}
+    for str_user_id, user_data in users.items():
+        try:
+            user_id = int(str_user_id)
+        except (TypeError, ValueError):
+            continue
+        for service in user_data.get('services') or []:
+            config_name = service.get('config_name')
+            server_key = service.get('server_key')
+            if not config_name or not server_key:
+                continue
+            if service.get('internal_key') == 'FREE_TRIAL':
+                continue
+            slot = f"{user_id}:{config_name}"
+            try:
+                due_at = int(schedule.get(slot) or 0)
+            except (TypeError, ValueError):
+                due_at = 0
+            if due_at > now_ms:
+                new_schedule[slot] = due_at     # هنوز وقت بررسی نرسیده
+                continue
+            due_by_server.setdefault(server_key, []).append((user_id, service, slot))
+
+    if not due_by_server:
+        return
+
+    for server_key, items in due_by_server.items():
+        try:
+            clients = await fetch_server_clients(server_key)
+        except Exception as exc:
+            logger.error(f"Reminder job could not read {server_key}: {exc}")
+            clients = None
+        if not clients:
+            continue                           # پنل در دسترس نبود؛ دور بعد دوباره تلاش می‌شود
+        for user_id, service, slot in items:
+            config_name = service.get('config_name')
+            client = clients.get(config_name)
+            if not client:
+                logger.info(f"Reminder: client {config_name} not found on {server_key}")
+                new_schedule[slot] = now_ms + SERVICE_MAX_CHECK_INTERVAL * 1000
+                continue
+            try:
+                new_schedule[slot] = await process_service_reminder(
+                    application, user_id, service, client, now_ms)
+            except Exception as exc:
+                logger.error(f"Reminder check failed for {config_name}: {exc}")
+                new_schedule[slot] = now_ms + SERVICE_MAX_CHECK_INTERVAL * 1000
+
+    try:
+        storage.set_kv(SERVICE_SCHEDULE_KEY, new_schedule)
+    except Exception as exc:
+        logger.error(f"Reminder schedule save failed: {exc}")
+
+
+async def service_reminder_loop(application) -> None:
+    """حلقهٔ پس‌زمینهٔ یادآوری‌ها (بدون نیاز به کتابخانهٔ اضافی)"""
+    await asyncio.sleep(SERVICE_REMINDER_FIRST_DELAY)
+    while True:
+        try:
+            await check_service_reminders(application)
+        except Exception as exc:
+            logger.error(f"Service reminder loop error: {exc}")
+        await asyncio.sleep(SERVICE_REMINDER_INTERVAL)
+
+
+async def start_reminder_task(application) -> None:
+    """شروع تسک یادآوری همراه با بالا آمدن ربات"""
+    application.create_task(service_reminder_loop(application), name="service-reminders")
+    logger.info("Service reminder task started.")
+
+
 _SINGLE_INSTANCE_HANDLE = None
 
 
@@ -6581,7 +7072,7 @@ def main() -> None:
         logger.error(f"Failed to start admin panel: {panel_error}")
     
     # ایجاد Application با روش جدید
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).post_init(start_reminder_task).build()
 
     # ========== تغییر 1: اضافه کردن هندلرهای اصلی در ابتدا ==========
     # ثبت پروفایل تلگرام کاربران برای پنل ادمین
@@ -6612,7 +7103,7 @@ def main() -> None:
         states={
             STATE_SELECT_SERVER: [
                 CallbackQueryHandler(select_service_plan, pattern=r'^SELECT_SERVER_'),
-                CallbackQueryHandler(prompt_for_config_name, pattern=r'^SERVICE_DETAILS_PLAN_'),
+                CallbackQueryHandler(prompt_for_config_name, pattern=r'^(SERVICE_DETAILS_PLAN_|PLAN_MONTHS_)'),
             ],
             STATE_WAITING_FOR_CONFIG_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_config_name),
@@ -6680,6 +7171,7 @@ def main() -> None:
         states={
             STATE_CUSTOM_BUILD: [
                 CallbackQueryHandler(custom_buy_adjust, pattern=r'^CUSTOM_ADJ_'),
+                CallbackQueryHandler(custom_buy_months, pattern=r'^CUSTOM_MONTH_'),
                 CallbackQueryHandler(custom_buy_confirm, pattern=r'^CUSTOM_CONFIRM$'),
             ],
             STATE_WAITING_FOR_CONFIG_NAME: [
