@@ -29,6 +29,7 @@
 
 import db as storage
 import logging
+import warnings
 import html
 import requests
 import json
@@ -40,6 +41,8 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, ConversationHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
+from telegram.request import HTTPXRequest
+from telegram.warnings import PTBUserWarning
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, Bot, error, InputFile
 import uuid 
 import base64 
@@ -55,6 +58,26 @@ logging.basicConfig(
 )
 for _noisy_logger in ("httpx", "httpcore", "telegram", "telegram.ext", "urllib3", "requests"):
     logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
+# فقط همان دو هشدار راهنمای python-telegram-bot پنهان می‌شود؛ بقیهٔ هشدارها نمایش داده می‌شوند
+warnings.filterwarnings(
+    "ignore",
+    message=r"^If 'per_message=False', 'CallbackQueryHandler' will not be tracked for every message",
+    category=PTBUserWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r"^Tasks created via `Application\.create_task` while the application is not running",
+    category=PTBUserWarning,
+)
+# خطاهای تکراری «تلاش دوبارهٔ اتصال» در کنسول چاپ نشوند؛ در حلقهٔ main خودمان گزارش می‌شود
+class _NetworkRetryFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            return not record.getMessage().startswith("Network Retry Loop")
+        except Exception:
+            return True
+
+logging.getLogger("telegram.ext").addFilter(_NetworkRetryFilter())
 logger = logging.getLogger(__name__)
 
 # ==========================================================
@@ -4857,12 +4880,12 @@ async def prompt_renew_service(update: Update, context: ContextTypes.DEFAULT_TYP
             
         volume_display = panel['volume'].replace(' گیگ', 'GB')
         callback_data = f"RENEW_SELECT_{internal_key}_{panel['price_toman']}"
-        button_text = f"➕ {panel['label']} (+{panel['days']} روز، +{volume_display}) - {panel['price_toman']:,.0f} تومان"
+        button_text = f"➕ {panel['label']} (+{volume_display} در ماه) - {panel['price_toman']:,.0f} تومان/ماه"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
-    # گزینه‌های تمدید مثل بخش خرید: بی‌نهایت و حجمی (سفارشی)
+    # گزینه‌های تمدید مثل بخش خرید: بی‌نهایت و حجمی (سفارشی)؛ مدت در مرحلهٔ بعد انتخاب می‌شود
     keyboard.append([InlineKeyboardButton(
-        f"♾️ تمدید بی‌نهایت (+{MAX_SUBSCRIPTION_DAYS} روز) - {UNLIMITED_PRICE_PER_USER:,} تومان",
+        f"♾️ تمدید بی‌نهایت (ماهی {UNLIMITED_PRICE_PER_USER:,} تومان)",
         callback_data="RENEW_UNLIMITED")])
     keyboard.append([InlineKeyboardButton(
         "📦 تمدید حجمی (انتخاب حجم)",
@@ -4880,7 +4903,7 @@ async def prompt_renew_service(update: Update, context: ContextTypes.DEFAULT_TYP
     
     try:
         await query.edit_message_text(
-            f"🔁 تمدید سرویس: {config_name}\nسرور: {current_server_name}\n\nیکی از گزینه‌های زیر را انتخاب کنید. حجم به حجم فعلی اضافه می‌شود. اگر مدت خریداری‌شده از اعتبار فعلی سرویس بیشتر باشد، اعتبار از همین حالا محاسبه می‌شود؛ در غیر این صورت اعتبار فعلی حفظ می‌شود:",
+            f"🔁 تمدید سرویس: {config_name}\nسرور: {current_server_name}\n\nیکی از گزینه‌های زیر را انتخاب کنید. بعد از آن مدت تمدید را هم مثل خرید (۱ تا ۱۲ ماه) انتخاب می‌کنید و مبلغ و روزها به همان نسبت محاسبه می‌شود. حجم به حجم فعلی اضافه می‌شود و اعتبار سرویس هیچ‌وقت از مقدار فعلی کمتر نمی‌شود:",
             reply_markup=reply_markup
         )
     except error.BadRequest:
@@ -4901,16 +4924,16 @@ async def _render_renewal_volume(update: Update, context: ContextTypes.DEFAULT_T
         f"📦 تمدید حجمی سرویس {config_name}\n\n"
         f"حجم اضافه: {volume_gb} گیگابایت از {VOLUME_MAX_GB} گیگ\n"
         f"{custom_slider_bar(volume_gb, VOLUME_MAX_GB)}  {volume_gb}/{VOLUME_MAX_GB}\n"
-        "⏳ اعتبار: اگر از اعتبار فعلی بیشتر شود، از همین حالا محاسبه می‌شود\n\n"
-        f"💰 قیمت: {price:,} تومان\n"
-        f"(هر گیگ {VOLUME_PRICE_PER_GB:,} تومان)"
+        "⏳ در مرحلهٔ بعد مدت تمدید (چند ماه) را انتخاب می‌کنید و اعتبار به همان نسبت اضافه می‌شود\n\n"
+        f"💰 قیمت هر ماه: {price:,} تومان\n"
+        f"(هر گیگ {VOLUME_PRICE_PER_GB:,} تومان در ماه)"
     )
     markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("⏪ ۱۰-", callback_data="RENEW_VOL_ADJ_-10"),
          InlineKeyboardButton("◀️ ۱-", callback_data="RENEW_VOL_ADJ_-1"),
          InlineKeyboardButton("▶️ ۱+", callback_data="RENEW_VOL_ADJ_1"),
          InlineKeyboardButton("⏩ ۱۰+", callback_data="RENEW_VOL_ADJ_10")],
-        [InlineKeyboardButton("✅ تایید و پرداخت", callback_data="RENEW_VOL_CONFIRM")],
+        [InlineKeyboardButton("✅ ادامه و انتخاب مدت", callback_data="RENEW_VOL_CONFIRM")],
         [InlineKeyboardButton("🔙 بازگشت به گزینه‌های تمدید",
                               callback_data=f"PROMPT_RENEW_{config_name}")],
     ])
@@ -4953,6 +4976,7 @@ async def _apply_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE,
     config_name = context.user_data.get('renewal_target_name')
     server_key = context.user_data.get('renewal_target_server_key')
     server_name = SERVERS_CONFIG.get(server_key, {}).get('display_name', "نامشخص")
+    context.user_data.pop('renewal_pending', None)
     days_add = days_add or MAX_SUBSCRIPTION_DAYS
 
     if not config_name or server_key not in SERVERS_CONFIG:
@@ -5031,42 +5055,182 @@ async def _apply_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE,
     return ConversationHandler.END
 
 
-async def renew_confirm_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """تایید و پرداخت تمدید حجمی"""
+def renewal_total_days(base_days: int, months: int) -> int:
+    """روزهای اضافه‌شده در تمدید برای مدت انتخاب‌شده (سقف یک‌ساله، مثل خرید)"""
+    return purchase_total_days(base_days or CUSTOM_DAYS, months)
+
+
+def _renewal_months_markup(base_days: int, base_price: int) -> InlineKeyboardMarkup:
+    """دکمه‌های انتخاب مدت تمدید (چند ماه) با نمایش روزها و قیمت هر گزینه"""
+    rows, row = [], []
+    for months in PURCHASE_MONTH_OPTIONS:
+        days = renewal_total_days(base_days, months)
+        price = base_price * months
+        row.append(InlineKeyboardButton(
+            f"🗓️ {months} ماه ({days} روز) - {price:,} تومان",
+            callback_data=f"RENEW_MONTHS_{months}",
+        ))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+
+async def _render_renewal_months(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """نمایش مرحلهٔ انتخاب مدت تمدید (مثل خرید)"""
     query = update.callback_query
+    pending = context.user_data.get('renewal_pending') or {}
+    config_name = context.user_data.get('renewal_target_name') or ''
+    base_price = int(pending.get('base_price') or 0)
+    base_days = int(pending.get('base_days') or MAX_SUBSCRIPTION_DAYS)
+
+    rows = list(_renewal_months_markup(base_days, base_price).inline_keyboard)
+    rows.append([InlineKeyboardButton(
+        "🔙 بازگشت به گزینه‌های تمدید",
+        callback_data=f"PROMPT_RENEW_{config_name}",
+    )])
+    markup = InlineKeyboardMarkup(rows)
+
+    text = (
+        f"🗓️ انتخاب مدت تمدید سرویس {config_name}\n\n"
+        f"گزینه: {pending.get('label') or '-'}\n"
+        f"افزایش حجم: {pending.get('volume_line') or 'بدون تغییر'}\n"
+        f"مدت پایه: {base_days} روز در هر ماه\n\n"
+        "مدت مورد نظر را انتخاب کنید؛ مبلغ و روزها به همان نسبت محاسبه می‌شود "
+        f"(سقف یک سال: {MAX_PURCHASE_DAYS} روز):"
+    )
+    try:
+        await query.edit_message_text(text, reply_markup=markup)
+    except Exception:
+        await context.bot.send_message(query.from_user.id, text, reply_markup=markup)
+    return STATE_WAITING_FOR_RENEWAL_CONFIRM
+
+
+async def renew_select_months(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """اعمال تمدید با مدت انتخاب‌شده (چند ماه)"""
+    query = update.callback_query
+    try:
+        months = int(query.data.split('RENEW_MONTHS_')[1])
+    except (IndexError, ValueError):
+        months = 0
+    if months not in PURCHASE_MONTH_OPTIONS:
+        await query.answer("مدت انتخابی معتبر نیست.", show_alert=True)
+        return STATE_WAITING_FOR_RENEWAL_CONFIRM
+
+    pending = context.user_data.get('renewal_pending') or {}
+    if not pending:
+        await query.answer("اطلاعات تمدید پیدا نشد.", show_alert=True)
+        return ConversationHandler.END
+
     await query.answer("در حال اعمال تمدید...")
+    base_days = int(pending.get('base_days') or MAX_SUBSCRIPTION_DAYS)
+    days_add = renewal_total_days(base_days, months)
+    price = int(pending.get('base_price') or 0) * months
+    label = f"{pending.get('label') or 'تمدید'} - {months} ماه ({days_add} روز)"
+
+    if pending.get('kind') == 'package':
+        return await _apply_package_renewal(
+            update, context, pending.get('internal_key'), price, days_add, label
+        )
+    return await _apply_renewal(
+        update, context, price, int(pending.get('volume_gb') or 0), label,
+        set_unlimited=bool(pending.get('set_unlimited')), days_add=days_add,
+    )
+
+
+async def renew_confirm_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """بعد از انتخاب حجم، مرحلهٔ انتخاب مدت تمدید"""
+    query = update.callback_query
+    await query.answer("مدت تمدید را انتخاب کنید...")
     volume_gb = int(context.user_data.get('renewal_vol', 10))
     price = custom_plan_price('volume', volume_gb, 1)
-    return await _apply_renewal(update, context, price, volume_gb, f"📦 تمدید حجمی {volume_gb} گیگ")
+    context.user_data['renewal_pending'] = {
+        'kind': 'volume',
+        'base_price': price,
+        'base_days': MAX_SUBSCRIPTION_DAYS,
+        'volume_gb': volume_gb,
+        'volume_line': f"+{volume_gb} GB",
+        'set_unlimited': False,
+        'label': f"📦 تمدید حجمی {volume_gb} گیگ",
+    }
+    return await _render_renewal_months(update, context)
 
 
 async def renew_unlimited(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """تمدید بی‌نهایت"""
+    """تمدید بی‌نهایت: ابتدا مدت تمدید انتخاب می‌شود"""
     query = update.callback_query
-    await query.answer("در حال اعمال تمدید...")
-    price = UNLIMITED_PRICE_PER_USER
-    return await _apply_renewal(update, context, price, 0, "♾️ تمدید بی‌نهایت", set_unlimited=True)
+    await query.answer("مدت تمدید را انتخاب کنید...")
+    context.user_data['renewal_pending'] = {
+        'kind': 'unlimited',
+        'base_price': UNLIMITED_PRICE_PER_USER,
+        'base_days': MAX_SUBSCRIPTION_DAYS,
+        'volume_gb': 0,
+        'volume_line': "نامحدود",
+        'set_unlimited': True,
+        'label': "♾️ تمدید بی‌نهایت",
+    }
+    return await _render_renewal_months(update, context)
+
 
 
 async def finalize_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """نهایی کردن تمدید سرویس"""
+    """انتخاب پلن تمدید و رفتن به مرحلهٔ انتخاب مدت (مثل خرید)"""
     query = update.callback_query
-    await query.answer("در حال تایید و اعمال تمدید...")
     user_id = query.from_user.id
-    
+
     try:
         data_string = query.data.split('RENEW_SELECT_')[1]
         internal_key, price_toman_str = data_string.rsplit('_', 1)
         price_toman = int(price_toman_str)
-        panel_info = SERVICES.get(internal_key)
-        
-        config_name = context.user_data.get('renewal_target_name')
-        server_key = context.user_data.get('renewal_target_server_key')
-        server_name = SERVERS_CONFIG.get(server_key, {}).get('display_name', "نامشناس")
+        panel_info = SERVICES.get(internal_key) or {}
+        try:
+            volume_gb = int(str(panel_info.get('volume') or '0').split(' ')[0])
+        except (TypeError, ValueError):
+            volume_gb = 0
+        base_days = int(panel_info.get('days') or MAX_SUBSCRIPTION_DAYS)
     except Exception as e:
         logger.error(f"Failed to retrieve renewal data in finalize_renewal: {e}")
         try:
             await query.edit_message_text("❌ خطای داده تمدید. لطفاً دوباره تلاش کنید.")
+        except Exception:
+            pass
+        await send_main_menu(user_id, context)
+        context.user_data.pop('in_conversation', None)
+        return ConversationHandler.END
+
+    await query.answer("مدت تمدید را انتخاب کنید...")
+    context.user_data['renewal_pending'] = {
+        'kind': 'package',
+        'internal_key': internal_key,
+        'base_price': price_toman,
+        'base_days': base_days,
+        'volume_gb': volume_gb,
+        'volume_line': f"+{volume_gb} GB",
+        'set_unlimited': False,
+        'label': f"{panel_info.get('label') or internal_key} (+{volume_gb} GB)",
+    }
+    return await _render_renewal_months(update, context)
+
+
+async def _apply_package_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                 internal_key: str, price_toman: int,
+                                 days_add: int, plan_label: str) -> int:
+    """اعمال تمدید پلن ثابت بعد از انتخاب مدت"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    context.user_data.pop('renewal_pending', None)
+    panel_info = SERVICES.get(internal_key) or {}
+    config_name = context.user_data.get('renewal_target_name')
+    server_key = context.user_data.get('renewal_target_server_key')
+    server_name = SERVERS_CONFIG.get(server_key, {}).get('display_name', "نامشخص")
+
+    if not config_name or not panel_info or server_key not in SERVERS_CONFIG:
+        try:
+            await query.edit_message_text(
+                "❌ اطلاعات تمدید پیدا نشد. لطفاً از «سرویس‌های من» دوباره تلاش کنید."
+            )
         except Exception:
             pass
         await send_main_menu(user_id, context)
@@ -5086,16 +5250,17 @@ async def finalize_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     new_balance = update_user_balance(user_id, -price_toman)
     
     # افزودن تراکنش تمدید به تاریخچه
-    add_transaction(user_id, "renewal", price_toman, f"تمدید سرویس {config_name} - {panel_info['label']}")
+    add_transaction(user_id, "renewal", price_toman, f"تمدید سرویس {config_name} - {plan_label}")
     
     volume_add = int(panel_info['volume'].split(' ')[0])
-    days_add = panel_info['days']
-    success, new_total_gb, new_expiry_days = await xui_update_client_v2(server_key, user_id, config_name, volume_add, days_add)
+    success, new_total_gb, new_expiry_days = await xui_update_client_v2(
+        server_key, user_id, config_name, volume_add, days_add
+    )
     
     if success:
         final_message = (
             f"✅ تمدید سرویس {config_name} با موفقیت انجام شد!\n\n"
-            f"پلن انتخابی: {panel_info['label']}\n"
+            f"پلن انتخابی: {plan_label}\n"
             f"افزایش حجم: +{volume_add} GB\n"
             f"افزایش اعتبار: +{days_add} روز\n\n"
             f"موجودی جدید: {new_balance:,.0f} تومان\n"
@@ -5121,7 +5286,7 @@ async def finalize_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 'server_key': server_key,
                 'server_name': server_name,
                 'internal_key': internal_key,
-                'service_label': panel_info['label'],
+                'service_label': plan_label,
                 'volume_gb': volume_add,
                 'days': days_add,
                 'price_toman': price_toman,
@@ -5146,7 +5311,7 @@ async def finalize_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 for admin_id in ADMIN_CHAT_IDS:
                     await context.bot.send_message(
                         admin_id,
-                        f"🔁 تمدید سرویس - کاربر: {format_user_info(user_id)} - کانفیگ: {config_name} - پلن: {panel_info['label']}",
+                        f"🔁 تمدید سرویس - کاربر: {format_user_info(user_id)} - کانفیگ: {config_name} - پلن: {plan_label}",
                         parse_mode="Markdown"
                     )
             except Exception as e2:
@@ -5164,7 +5329,7 @@ async def finalize_renewal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     f"👤 کاربر: {format_user_info(user_id, show_copyable=False)}\n"
                     f"📛 کانفیگ: `{config_name}`\n"
                     f"🌐 سرور: {server_name}\n"
-                    f"🛍️ پلن: {panel_info['label']}\n"
+                    f"🛍️ پلن: {plan_label}\n"
                     f"💰 مبلغ: {price_toman:,.0f} تومان\n"
                     f"📝 خطا: به‌روزرسانی کانفیگ در پنل X-UI ناموفق بود\n"
                     f"🕒 زمان: {datetime.datetime.now().strftime('%Y/%m/%d %H:%M')}",
@@ -7158,7 +7323,20 @@ def main() -> None:
         logger.error(f"Failed to start admin panel: {panel_error}")
     
     # ایجاد Application با روش جدید
-    application = Application.builder().token(BOT_TOKEN).post_init(start_reminder_task).build()
+    # تنظیمات شبکهٔ تلگرام: تایم‌اوت‌های بلندتر تا در شبکهٔ ناپایدار خطای ReadTimeout/TimedOut رخ ندهد
+    telegram_request = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=60.0,
+        write_timeout=60.0,
+        pool_timeout=30.0,
+    )
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .request(telegram_request)
+        .post_init(start_reminder_task)
+        .build()
+    )
 
     # ========== تغییر 1: اضافه کردن هندلرهای اصلی در ابتدا ==========
     # ثبت پروفایل تلگرام کاربران برای پنل ادمین
@@ -7301,6 +7479,7 @@ def main() -> None:
                 CallbackQueryHandler(renew_open_volume, pattern=r'^RENEW_OPEN_VOLUME$'),
                 CallbackQueryHandler(renew_adjust_volume, pattern=r'^RENEW_VOL_ADJ_'),
                 CallbackQueryHandler(renew_confirm_volume, pattern=r'^RENEW_VOL_CONFIRM$'),
+                CallbackQueryHandler(renew_select_months, pattern=r'^RENEW_MONTHS_'),
                 CallbackQueryHandler(prompt_renew_service, pattern=r'^PROMPT_RENEW_'),
                 CallbackQueryHandler(back_to_services, pattern=r'^back_to_services$'),
             ],
@@ -7321,7 +7500,64 @@ def main() -> None:
 
     # شروع ربات
     logger.info("Bot is starting...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # تنها خطاهای موقتی (قطعی شبکه، Timeout و خطاهای 5xx تلگرام) تکرار می‌شوند؛
+    # خطاهای دائمی مثل توکن نامعتبر یا Conflict ربات را با پیام واضح متوقف می‌کنند
+    while True:
+        try:
+            application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                timeout=30,
+                close_loop=False,  # تا در تلاش دوباره، event loop بسته نشود
+            )
+            break  # خروج تمیز (مثلاً Ctrl+C)
+        except KeyboardInterrupt:
+            logger.warning("Bot stopped by user.")
+            break
+        except Exception as run_error:
+            short = " ".join(str(run_error).split())[:200] or "no details"
+            # --- خطاهای دائمی: تلاش دوباره فایده‌ای ندارد ---
+            if isinstance(run_error, error.InvalidToken):
+                logger.error(
+                    "BOT_TOKEN is invalid or has been revoked (%s). Fix BOT_TOKEN in the "
+                    "settings and start the bot again.",
+                    short,
+                )
+                break
+            if isinstance(run_error, error.Conflict):
+                logger.error(
+                    "Another bot instance or a webhook is already using this BOT_TOKEN (%s). "
+                    "Stop the other instance or delete the webhook, then start the bot again.",
+                    short,
+                )
+                break
+            if isinstance(run_error, error.Forbidden):
+                logger.error(
+                    "Telegram rejected this bot's access (%s). Make sure the bot is not "
+                    "blocked or removed from its groups, then start it again.",
+                    short,
+                )
+                break
+            # --- خطاهای موقتی: با فاصله دوباره تلاش می‌شود ---
+            if isinstance(run_error, error.RetryAfter):
+                wait_seconds = max(1, min(int(getattr(run_error, "retry_after", 15) or 15), 300))
+                logger.warning(
+                    "Telegram asked to wait %s seconds before retrying - waiting...", wait_seconds
+                )
+                time.sleep(wait_seconds)
+                continue
+            if isinstance(run_error, error.NetworkError):  # TimedOut هم زیرمجموعهٔ NetworkError است
+                logger.warning(
+                    "Temporary Telegram/network problem (%s: %s) - reconnecting in 15 seconds...",
+                    type(run_error).__name__, short,
+                )
+                time.sleep(15)
+                continue
+            # --- هر خطای ناشناختهٔ دیگر: توقف، تا پشت سر هم تکرار نشود ---
+            logger.error(
+                "Unrecoverable error while polling (%s: %s) - bot stopped.",
+                type(run_error).__name__, short,
+            )
+            break
 
 if __name__ == "__main__":
     main()
